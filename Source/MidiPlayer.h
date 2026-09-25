@@ -14,6 +14,7 @@ struct PlayerNote
     double endSec { 0.25 };
     int note { 60 };     // 0-127
     int channel { 1 };   // 1-16  (Part A)
+    int velocity { 100 };
 };
 
 // SMF playback engine. Timestamps are converted to seconds.
@@ -106,8 +107,32 @@ public:
     bool isLoaded()  const { juce::ScopedLock sl(lock); return loaded; }
     double getPosition() const { juce::ScopedLock sl(lock); return positionSec; }
     double getLength()   const { juce::ScopedLock sl(lock); return lengthSec; }
+    double getBpm()      const { juce::ScopedLock sl(lock); return fileBpm; }
     juce::String getName() const { juce::ScopedLock sl(lock); return name; }
     juce::File getFile() const { juce::ScopedLock sl(lock); return path; }
+
+    // Display-only score (STUDIO -> PLAYER roll). Does not touch the SMF sequence.
+    void setDisplayScore(const std::vector<PlayerNote>& src, double length, const juce::String& title,
+                         int lo, int hi, std::uint32_t mask)
+    {
+        juce::ScopedLock sl(lock);
+        notes = src;
+        lengthSec = juce::jmax(0.001, length);
+        name = title;
+        loNote = lo;
+        hiNote = hi;
+        channelMask = mask;
+        loaded = true;
+        sequence.clear();
+        ++loadGeneration;
+    }
+
+    void setDisplayClock(double pos, bool isPlaying)
+    {
+        juce::ScopedLock sl(lock);
+        positionSec = juce::jmax(0.0, pos);
+        playing = isPlaying;
+    }
 
     // Copies the score when the loaded file has changed. Cheap no-op otherwise.
     void copyScore(int& seenGen, std::vector<PlayerNote>& dest,
@@ -210,7 +235,7 @@ private:
             double end = start + 0.35;
             if (ev->noteOffObject != nullptr)
                 end = juce::jmax(start + 0.04, ev->noteOffObject->message.getTimeStamp());
-            notes.push_back({ start, end, nn, ch });
+            notes.push_back({ start, end, nn, ch, juce::jlimit(1, 127, (int) m.getVelocity()) });
             channelMask |= (1u << (ch - 1));
             loNote = juce::jmin(loNote, nn);
             hiNote = juce::jmax(hiNote, nn);
@@ -219,6 +244,17 @@ private:
         {
             loNote = 48;
             hiNote = 72;
+        }
+        fileBpm = 120.0;
+        for (int i = 0; i < n; ++i)
+        {
+            auto* ev = sequence.getEventPointer(i);
+            if (ev == nullptr || ! ev->message.isTempoMetaEvent())
+                continue;
+            const double spq = ev->message.getTempoSecondsPerQuarterNote();
+            if (spq > 0.0001)
+                fileBpm = juce::jlimit(40.0, 240.0, 60.0 / spq);
+            break;
         }
         ++loadGeneration;
     }
@@ -229,6 +265,7 @@ private:
     juce::String name;
     double positionSec { 0.0 };
     double lengthSec { 0.0 };
+    double fileBpm { 120.0 };
     int nextIndex { 0 };
     int loNote { 48 };
     int hiNote { 72 };

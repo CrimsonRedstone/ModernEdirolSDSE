@@ -6,10 +6,25 @@
 
 using namespace sd80;
 
+static void colourAudioSelector(juce::AudioDeviceSelectorComponent& sel, const SD80LookAndFeel& lnf)
+{
+    sel.setColour(juce::Label::textColourId, lnf.text);
+    sel.setColour(juce::ListBox::textColourId, lnf.text);
+    sel.setColour(juce::ListBox::backgroundColourId, lnf.surface);
+    sel.setColour(juce::ListBox::outlineColourId, lnf.border);
+    sel.setColour(juce::TextButton::textColourOffId, lnf.text);
+    sel.setColour(juce::TextButton::buttonColourId, lnf.surface2);
+    sel.setColour(juce::ComboBox::textColourId, lnf.text);
+    sel.setColour(juce::ComboBox::backgroundColourId, lnf.surface);
+    sel.setColour(juce::ComboBox::outlineColourId, lnf.border);
+    sel.setColour(juce::PopupMenu::textColourId, lnf.text);
+    sel.setColour(juce::PopupMenu::backgroundColourId, lnf.surface);
+}
+
 static void styleKnob(juce::Slider& s, const juce::String& name)
 {
     s.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
-    s.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 42, 14);
+    s.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 44, 16);
     s.setRotaryParameters(juce::MathConstants<float>::pi * 1.2f,
                           juce::MathConstants<float>::pi * 2.8f, true);
     s.setName(name);
@@ -25,7 +40,7 @@ void ModernEdirolSd80Editor::CategoryModel::paintListBoxItem(int row, juce::Grap
         g.fillRect(0, 0, w, h);
     }
     g.setColour(text);
-    g.setFont(juce::FontOptions(12.0f));
+    g.setFont(juce::FontOptions(13.0f));
     g.drawText(names[row], 8, 0, w - 12, h, juce::Justification::centredLeft);
 }
 
@@ -49,10 +64,10 @@ void ModernEdirolSd80Editor::PatchModel::paintListBoxItem(int row, juce::Graphic
     }
     auto* e = items[(size_t) row];
     g.setColour(sel ? selFg : text);
-    g.setFont(juce::FontOptions(12.0f));
+    g.setFont(juce::FontOptions(13.0f));
     g.drawText(e->name, 8, 0, w - 72, h, juce::Justification::centredLeft);
     g.setColour(muted);
-    g.setFont(juce::FontOptions(10.0f));
+    g.setFont(juce::FontOptions(11.0f));
     g.drawText("PC " + juce::String(e->pc + 1), w - 66, 0, 58, h, juce::Justification::centredRight);
 }
 
@@ -76,6 +91,8 @@ ModernEdirolSd80Editor::ModernEdirolSd80Editor(ModernEdirolSd80Processor& p)
     : AudioProcessorEditor(&p), proc(p)
 {
     setLookAndFeel(&lnf);
+    setWantsKeyboardFocus(true);
+    addKeyListener(this);
     setSize(1440, 900);
     setResizable(true, true);
     setResizeLimits(1180, 760, 2400, 1600);
@@ -84,31 +101,53 @@ ModernEdirolSd80Editor::ModernEdirolSd80Editor(ModernEdirolSd80Processor& p)
     auto togFn  = [this](const juce::String& id) { toggleLock(id); };
 
     title.setText("MODERN EDIROL SD-80", juce::dontSendNotification);
-    title.setFont(juce::FontOptions(22.0f).withStyle("Bold"));
+    title.setFont(juce::FontOptions(23.0f).withStyle("Bold"));
     addAndMakeVisible(title);
 
     subtitle.setText("32-part USB MIDI controller  |  Native / GM2 / GS / XG Lite", juce::dontSendNotification);
-    subtitle.setFont(juce::FontOptions(12.0f));
+    subtitle.setFont(juce::FontOptions(13.0f));
     addAndMakeVisible(subtitle);
 
     creditsLabel.setText("by Crimson Redstone", juce::dontSendNotification);
-    creditsLabel.setFont(juce::FontOptions(12.0f));
+    creditsLabel.setFont(juce::FontOptions(13.0f));
     addAndMakeVisible(creditsLabel);
 
     queueLabel.setJustificationType(juce::Justification::centredRight);
     addAndMakeVisible(queueLabel);
 
-    dropHint.setText("Drop a .mid on the mixer to auto-assign banks. PLAYER is the cassette. PLAYLIST ping-pongs Part A/B.",
+    dropHint.setText("Drop a .mid on the mixer to auto-assign banks. PLAYER is the cassette. PLAYLIST ping-pongs. STUDIO writes songs. PATCH builds user tones.",
                      juce::dontSendNotification);
     dropHint.setJustificationType(juce::Justification::centred);
     addAndMakeVisible(dropHint);
 
-    for (auto* b : { &syncButton, &partAButton, &partBButton, &tabMixer, &tabPlayer, &tabPlaylist, &tabOptions,
-                     &savePreset, &loadPreset })
+    for (auto* b : { &syncButton, &tabMixer, &tabPlayer, &tabPlaylist, &tabStudio, &tabPatch, &tabOptions,
+                     &savePreset, &loadPreset, &keysButton })
     {
         b->addListener(this);
         addAndMakeVisible(*b);
     }
+    keysButton.setClickingTogglesState(true);
+    keysButton.setToggleState(proc.getScreenKeysOn(), juce::dontSendNotification);
+    keysButton.setTooltip("On-screen piano. Off until you turn it on. With it on, the computer keys play the selected part (Z is C, like FL).");
+    screenKeys.setVisible(proc.getScreenKeysOn());
+    screenKeys.setOctave(proc.getScreenKeysOct());
+    screenKeys.onNote = [this](int pitch, bool on)
+    {
+        int vel = 100;
+        if (on)
+            vel = proc.getScreenKeysVel();
+        proc.dawPreview(proc.getSelectedPart(), pitch, on, vel);
+    };
+    screenKeys.onOctave = [this](int oct)
+    {
+        releaseComputerKeys();
+        proc.setScreenKeysOct(oct);
+    };
+    addChildComponent(screenKeys);
+    partAButton.addListener(this);
+    partBButton.addListener(this);
+    mixerPage.addAndMakeVisible(partAButton);
+    mixerPage.addAndMakeVisible(partBButton);
     partAButton.setClickingTogglesState(true);
     partBButton.setClickingTogglesState(true);
     partAButton.setRadioGroupId(1);
@@ -118,10 +157,14 @@ ModernEdirolSd80Editor::ModernEdirolSd80Editor(ModernEdirolSd80Processor& p)
     tabMixer.setClickingTogglesState(true);
     tabPlayer.setClickingTogglesState(true);
     tabPlaylist.setClickingTogglesState(true);
+    tabStudio.setClickingTogglesState(true);
+    tabPatch.setClickingTogglesState(true);
     tabOptions.setClickingTogglesState(true);
     tabMixer.setRadioGroupId(3);
     tabPlayer.setRadioGroupId(3);
     tabPlaylist.setRadioGroupId(3);
+    tabStudio.setRadioGroupId(3);
+    tabPatch.setRadioGroupId(3);
     tabOptions.setRadioGroupId(3);
     tabMixer.setToggleState(true, juce::dontSendNotification);
 
@@ -134,12 +177,18 @@ ModernEdirolSd80Editor::ModernEdirolSd80Editor(ModernEdirolSd80Processor& p)
     wireLock(modeBox, "mode");
     modeBox.lockedFn = lockFn; modeBox.toggleFn = togFn;
 
+    throttleBox.addItem("0 ms", 1);
+    throttleBox.addItem("10 ms", 10);
     throttleBox.addItem("20 ms", 20);
     throttleBox.addItem("30 ms", 30);
     throttleBox.addItem("40 ms", 40);
     throttleBox.addItem("50 ms", 50);
-    throttleBox.setSelectedId(juce::jlimit(20, 50, (int) proc.apvts.getRawParameterValue("throttle")->load()),
-                              juce::dontSendNotification);
+    {
+        const int t = (int) proc.apvts.getRawParameterValue("throttle")->load();
+        throttleBox.setSelectedId(t <= 0 ? 1 : juce::jlimit(10, 50, ((t + 5) / 10) * 10),
+                                  juce::dontSendNotification);
+    }
+    throttleBox.setTooltip("USB gap between CC / SysEx. 0 ms is off (like FL MIDI Out). Raise only if a dump drops.");
     throttleBox.addListener(this);
     wireLock(throttleBox, "throttle");
 
@@ -149,18 +198,25 @@ ModernEdirolSd80Editor::ModernEdirolSd80Editor(ModernEdirolSd80Processor& p)
     addAndMakeVisible(mixerPage);
     addAndMakeVisible(playerPage);
     addAndMakeVisible(playlistPage);
+    addAndMakeVisible(studioPage);
     addAndMakeVisible(optionsPage);
     optionsPage.addAndMakeVisible(optionsView);
     optionsView.setViewedComponent(&optionsInner, false);
+    studio = std::make_unique<DawStudio>(proc);
+    studioPage.addAndMakeVisible(*studio);
+    addAndMakeVisible(patchPage);
+    patchEd = std::make_unique<PatchEditor>(proc);
+    patchPage.addAndMakeVisible(*patchEd);
+    patchPage.setVisible(false);
 
     for (int i = 0; i < 16; ++i)
     {
         auto& st = strips[(size_t) i];
         st.ch.setText(juce::String(i + 1), juce::dontSendNotification);
         st.ch.setJustificationType(juce::Justification::centred);
-        st.ch.setFont(juce::FontOptions(10.0f).withStyle("Bold"));
+        st.ch.setFont(juce::FontOptions(11.0f).withStyle("Bold"));
         st.name.setJustificationType(juce::Justification::centred);
-        st.name.setFont(juce::FontOptions(11.0f));
+        st.name.setFont(juce::FontOptions(12.0f));
         st.name.setInterceptsMouseClicks(true, false);
         st.name.setTooltip("Right-click to lock this instrument");
         st.name.lockedFn = lockFn; st.name.toggleFn = togFn;
@@ -172,7 +228,7 @@ ModernEdirolSd80Editor::ModernEdirolSd80Editor(ModernEdirolSd80Processor& p)
         st.solo.setButtonText("S");
         st.solo.setClickingTogglesState(true);
         st.vol.setSliderStyle(juce::Slider::LinearVertical);
-        st.vol.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 36, 14);
+        st.vol.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 36, 16);
         st.pan.setSliderStyle(juce::Slider::LinearHorizontal);
         st.pan.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
         mixerPage.addAndMakeVisible(st.ch);
@@ -197,11 +253,13 @@ ModernEdirolSd80Editor::ModernEdirolSd80Editor(ModernEdirolSd80Processor& p)
     mixerPage.addAndMakeVisible(muteAllBtn);
     mixerPage.addAndMakeVisible(unmuteAllBtn);
     mixerPage.addAndMakeVisible(unsoloAllBtn);
+    partAButton.setTooltip("Show parts 1-16. Does not change the sound.");
+    partBButton.setTooltip("Show parts 17-32. Does not change the sound.");
 
     inspectorTitle.setText("DEEP EDIT", juce::dontSendNotification);
-    inspectorTitle.setFont(juce::FontOptions(13.0f).withStyle("Bold"));
+    inspectorTitle.setFont(juce::FontOptions(14.0f).withStyle("Bold"));
     mixerPage.addAndMakeVisible(inspectorTitle);
-    patchNameLabel.setFont(juce::FontOptions(16.0f).withStyle("Bold"));
+    patchNameLabel.setFont(juce::FontOptions(17.0f).withStyle("Bold"));
     mixerPage.addAndMakeVisible(patchNameLabel);
 
     mapBox.addItem("Classical", 1);
@@ -212,17 +270,19 @@ ModernEdirolSd80Editor::ModernEdirolSd80Editor(ModernEdirolSd80Processor& p)
     mapBox.addItem("Special 2", 6);
     mapBox.addItem("User", 7);
     mapBox.addListener(this);
+    mapBox.setTooltip("Filter this list. The part keeps its sound until you click a patch.");
     mixerPage.addAndMakeVisible(mapBox);
     mapBox.lockedFn = lockFn; mapBox.toggleFn = togFn;
 
     mixerPage.addAndMakeVisible(drumToggle);
     drumToggle.addListener(this);
+    drumToggle.setTooltip("Show instruments or drum kits. Click a row to change the part.");
     drumToggle.lockedFn = lockFn; drumToggle.toggleFn = togFn;
 
     catTitle.setText("Category", juce::dontSendNotification);
-    catTitle.setFont(juce::FontOptions(11.0f));
+    catTitle.setFont(juce::FontOptions(12.0f));
     patchTitle.setText("Patch", juce::dontSendNotification);
-    patchTitle.setFont(juce::FontOptions(11.0f));
+    patchTitle.setFont(juce::FontOptions(12.0f));
     mixerPage.addAndMakeVisible(catTitle);
     mixerPage.addAndMakeVisible(patchTitle);
 
@@ -230,7 +290,11 @@ ModernEdirolSd80Editor::ModernEdirolSd80Editor(ModernEdirolSd80Processor& p)
     patchSearch.onTextChange = [this] { rebuildPatchBrowser(); };
     mixerPage.addAndMakeVisible(patchSearch);
 
-    catModel.onSel = [this](int) { rebuildPatchBrowser(); };
+    catModel.onSel = [this](int)
+    {
+        if (! patchUiLock)
+            rebuildPatchBrowser();
+    };
     patchModel.onSel = [this](int row) { pickPatchAt(row); };
     patchModel.onLock = [this]
     {
@@ -243,8 +307,8 @@ ModernEdirolSd80Editor::ModernEdirolSd80Editor(ModernEdirolSd80Processor& p)
     };
     categoryList.setModel(&catModel);
     patchList.setModel(&patchModel);
-    categoryList.setRowHeight(20);
-    patchList.setRowHeight(20);
+    categoryList.setRowHeight(22);
+    patchList.setRowHeight(22);
     mixerPage.addAndMakeVisible(categoryList);
     mixerPage.addAndMakeVisible(patchList);
 
@@ -253,7 +317,7 @@ ModernEdirolSd80Editor::ModernEdirolSd80Editor(ModernEdirolSd80Processor& p)
         styleKnob(s, n);
         l.setText(n, juce::dontSendNotification);
         l.setJustificationType(juce::Justification::centred);
-        l.setFont(juce::FontOptions(10.0f));
+        l.setFont(juce::FontOptions(11.0f));
         mixerPage.addAndMakeVisible(s);
         mixerPage.addAndMakeVisible(l);
         s.lockedFn = lockFn;
@@ -276,6 +340,37 @@ ModernEdirolSd80Editor::ModernEdirolSd80Editor(ModernEdirolSd80Processor& p)
     porta.addListener(this);
     porta.lockedFn = lockFn; porta.toggleFn = togFn;
 
+    auto sec = [&](juce::Label& l, const char* text)
+    {
+        l.setText(text, juce::dontSendNotification);
+        l.setFont(juce::FontOptions(12.0f).withName(juce::Font::getDefaultMonospacedFontName()).withStyle("Bold"));
+        l.setJustificationType(juce::Justification::centred);
+        mixerPage.addAndMakeVisible(l);
+    };
+    sec(secFilter, "--== FILTER ==--");
+    sec(secEnv, "--== ENVELOPE ==--");
+    sec(secVib, "--== VIBRATO ==--");
+    sec(secSend, "--== SEND ==--");
+    scaleButton.setClickingTogglesState(true);
+    scaleButton.setTooltip("Scale tune for this part. 0 cents is even. Each step is one cent, from -64 to +63.");
+    scaleButton.onClick = [this]
+    {
+        scaleOpen = scaleButton.getToggleState();
+        refreshScaleTune();
+        resized();
+    };
+    mixerPage.addAndMakeVisible(scaleButton);
+    scaleTune.onChange = [this](int semi, int v)
+    {
+        proc.setScaleTune(proc.getSelectedPart(), semi, v);
+    };
+    scaleTune.onReset = [this]
+    {
+        proc.resetScaleTune(proc.getSelectedPart());
+        refreshScaleTune();
+    };
+    mixerPage.addChildComponent(scaleTune);
+
     mfxSel.addItem("Insert MFX A", 1);
     mfxSel.addItem("Insert MFX B", 2);
     mfxSel.addItem("Insert MFX C", 3);
@@ -290,7 +385,7 @@ ModernEdirolSd80Editor::ModernEdirolSd80Editor(ModernEdirolSd80Processor& p)
     outAsg.lockedFn = lockFn; outAsg.toggleFn = togFn;
 
     fxTitle.setText("SYSTEM FX  +  MULTI-FX  (categorized)", juce::dontSendNotification);
-    fxTitle.setFont(juce::FontOptions(13.0f).withStyle("Bold"));
+    fxTitle.setFont(juce::FontOptions(14.0f).withStyle("Bold"));
     mixerPage.addAndMakeVisible(fxTitle);
     for (auto* b : { &reverbTypeBtn, &chorusTypeBtn, &mfxABtn, &mfxBBtn, &mfxCBtn })
     {
@@ -316,7 +411,7 @@ ModernEdirolSd80Editor::ModernEdirolSd80Editor(ModernEdirolSd80Processor& p)
     mfxWarn.setText("Multi FX: leave OFF unless you need it. Each change floods the USB queue.",
                     juce::dontSendNotification);
     mfxWarn.setJustificationType(juce::Justification::centredLeft);
-    mfxWarn.setFont(juce::FontOptions(11.0f));
+    mfxWarn.setFont(juce::FontOptions(12.0f));
     mixerPage.addAndMakeVisible(mfxWarn);
 
     auto addFxK = [this, &lockFn, &togFn](sd80lock::Slider& s, juce::Label& l, const char* n)
@@ -324,7 +419,7 @@ ModernEdirolSd80Editor::ModernEdirolSd80Editor(ModernEdirolSd80Processor& p)
         styleKnob(s, n);
         l.setText(n, juce::dontSendNotification);
         l.setJustificationType(juce::Justification::centred);
-        l.setFont(juce::FontOptions(10.0f));
+        l.setFont(juce::FontOptions(11.0f));
         mixerPage.addAndMakeVisible(s);
         mixerPage.addAndMakeVisible(l);
         s.lockedFn = lockFn; s.toggleFn = togFn;
@@ -353,7 +448,7 @@ ModernEdirolSd80Editor::ModernEdirolSd80Editor(ModernEdirolSd80Processor& p)
             styleKnob(s, "P");
             l.setText("P" + juce::String(k + 1), juce::dontSendNotification);
             l.setJustificationType(juce::Justification::centred);
-            l.setFont(juce::FontOptions(10.0f));
+            l.setFont(juce::FontOptions(11.0f));
             mixerPage.addAndMakeVisible(s);
             mixerPage.addAndMakeVisible(l);
             s.lockedFn = lockFn; s.toggleFn = togFn;
@@ -396,48 +491,86 @@ ModernEdirolSd80Editor::ModernEdirolSd80Editor(ModernEdirolSd80Processor& p)
             popPianoRoll(true);
         }
     };
-    playerHelp.setText("A playlist mirrors on this cassette and piano-roll (Part A or B) until you load a tape, which disarms the playlist. LOOP while armed: ALL / this song / off. Notes fall toward the keyboard - POP OUT or FULL for a bigger view. Colours are display-only.",
+    roll.setAeternaMode(proc.getAeternaMode());
+    roll.onAeternaMode = [this](int mode) { proc.setAeternaMode(mode); };
+    playerHelp.setText("Space plays and pauses. Playlist is Part A. Click Part B to load a second file and turn it on so both play. CLEAR empties both.",
                        juce::dontSendNotification);
     playerHelp.setJustificationType(juce::Justification::centred);
+    playerHelp.setMinimumHorizontalScale(0.85f);
+    playerHelp.setFont(juce::FontOptions(14.0f));
     playerPage.addAndMakeVisible(playerHelp);
     playerWarn.setText("Changing many parameters while MIDI is playing can cause volume spikes on this 2002 USB module.",
                        juce::dontSendNotification);
     playerWarn.setJustificationType(juce::Justification::centred);
-    playerWarn.setFont(juce::FontOptions(11.0f));
+    playerWarn.setFont(juce::FontOptions(12.0f));
     playerPage.addAndMakeVisible(playerWarn);
     deck.onPlay = [this]
     {
+        if (proc.studioDisplayOn())
+        {
+            proc.dawPlay();
+            updatePlayerUi();
+            return;
+        }
+        proc.dawStop();
         if (proc.playlistIsArmed())
             proc.playlistPlay();
         else
         {
             proc.playlistStop();
             proc.player.play();
+            proc.partBFollow(1);
         }
         updatePlayerUi();
         updatePlaylistUi();
     };
     deck.onPause = [this]
     {
+        if (proc.studioDisplayOn())
+        {
+            proc.dawPause();
+            updatePlayerUi();
+            return;
+        }
         if (proc.playlistIsArmed())
             proc.playlistPause();
         else
+        {
             proc.player.pause();
+            proc.partBFollow(2);
+        }
         updatePlayerUi();
         updatePlaylistUi();
     };
     deck.onStop = [this]
     {
+        if (proc.studioDisplayOn())
+        {
+            proc.dawStop();
+            updatePlayerUi();
+            updatePlaylistUi();
+            roll.snapDisplayToEngine();
+            return;
+        }
         if (proc.playlistIsArmed())
             proc.playlistStop();
         else
+        {
             proc.player.stop();
+            proc.partBFollow(0);
+        }
+        roll.snapDisplayToEngine();
         updatePlayerUi();
         updatePlaylistUi();
     };
     deck.onLoad = [this] { loadPlayerFile(); };
     deck.onLoop = [this]
     {
+        if (proc.studioDisplayOn())
+        {
+            updatePlayerUi();
+            return;
+        }
         if (proc.playlistIsArmed())
             proc.cyclePlaylistLoop();
         else
@@ -460,51 +593,61 @@ ModernEdirolSd80Editor::ModernEdirolSd80Editor(ModernEdirolSd80Processor& p)
     };
 
     playlistTitle.setText("PLAYLIST", juce::dontSendNotification);
-    playlistTitle.setFont(juce::FontOptions(16.0f).withStyle("Bold"));
-    playlistPage.addAndMakeVisible(playlistTitle);
-    playlistHelp.setText("Two decks, one USB port each. PLAY starts Part A. Player PLAY / PAUSE / STOP / LOOP follow this while the playlist is armed. Load a tape on PLAYER to disarm.",
+    playlistTitle.setFont(juce::FontOptions(17.0f).withStyle("Bold"));
+    playlistHelp.setText("The queue is Part A only. Click Part B to load another MIDI, then turn it on to play both at once. CLEAR empties the cassette and the list.",
                          juce::dontSendNotification);
-    playlistHelp.setFont(juce::FontOptions(13.0f));
+    playlistHelp.setFont(juce::FontOptions(14.0f));
     playlistHelp.setJustificationType(juce::Justification::topLeft);
-    playlistPage.addAndMakeVisible(playlistHelp);
     playlistStatus.setJustificationType(juce::Justification::centredRight);
-    playlistPage.addAndMakeVisible(playlistStatus);
     playlistSlotA.setPortLabel("PART A   1-16");
     playlistSlotB.setPortLabel("PART B   17-32");
+    playlistSlotB.setCompanion(true);
     playlistSlotA.attach(&proc.playlistA);
     playlistSlotB.attach(&proc.playlistB);
-    playlistPage.addAndMakeVisible(playlistSlotA);
-    playlistPage.addAndMakeVisible(playlistSlotB);
+    playlistSlotB.onLoad = [this] { loadPartBFile(); };
+    playlistSlotB.onToggle = [this]
+    {
+        proc.setPartBEnabled(! proc.partBEnabled());
+        updatePlaylistUi();
+        updatePlayerUi();
+    };
     for (auto* b : { &playlistPlay, &playlistStop, &playlistAddBtn, &playlistClearBtn })
     {
         b->addListener(this);
-        playlistPage.addAndMakeVisible(*b);
+        playerPage.addAndMakeVisible(*b);
     }
     playlistQueueHdr.setText("UP NEXT", juce::dontSendNotification);
-    playlistQueueHdr.setFont(juce::FontOptions(12.0f).withStyle("Bold"));
-    playlistPage.addAndMakeVisible(playlistQueueHdr);
+    playlistQueueHdr.setFont(juce::FontOptions(13.0f).withStyle("Bold"));
+    playerPage.addAndMakeVisible(playlistQueueHdr);
     playlistQueueBox.setModel(&playlistModel);
-    playlistQueueBox.setRowHeight(28);
-    playlistPage.addAndMakeVisible(playlistQueueBox);
+    playlistQueueBox.setRowHeight(22);
+    playerPage.addAndMakeVisible(playlistQueueBox);
+    playerPage.addAndMakeVisible(playlistStatus);
+    playerPage.addAndMakeVisible(playlistSlotA);
+    playerPage.addAndMakeVisible(playlistSlotB);
+    playlistAddBtn.setTooltip("Add .mid files to the playlist");
+    playlistClearBtn.setTooltip("Clear the cassette and the playlist");
+    playlistPlay.setVisible(false);
+    playlistStop.setVisible(false);
 
     auto& oi = optionsInner;
     optionsTitle.setText("OPTIONS", juce::dontSendNotification);
-    optionsTitle.setFont(juce::FontOptions(16.0f).withStyle("Bold"));
+    optionsTitle.setFont(juce::FontOptions(17.0f).withStyle("Bold"));
     oi.addAndMakeVisible(optionsTitle);
 
     donateBtn.addListener(this);
     oi.addAndMakeVisible(donateBtn);
-    creditsBody.setText("Modern Edirol SD-80  v1.6.5  |  JUCE 9.0.1\nFreeware MIDI controller by Crimson Redstone.\nUnofficial editor for the Edirol / Roland Studio Canvas SD-80.\nRight-click any fader, knob, toggle, menu or strip name to lock it.",
+    creditsBody.setText("Modern Edirol SD-80  v1.8.12  |  JUCE 9.0.1\nFreeware MIDI controller by Crimson Redstone.\nUnofficial editor for the Edirol / Roland Studio Canvas SD-80.\nRight-click any fader, knob, toggle, menu or strip name to lock it.\nSpace plays and pauses. The playlist is Part A. Part B is a second file you can turn on. STUDIO: R arms a lane, REC records live play. KEYS is the on-screen piano. SCALE is per-part tune.",
                         juce::dontSendNotification);
-    creditsBody.setFont(juce::FontOptions(13.0f));
+    creditsBody.setFont(juce::FontOptions(14.0f));
     oi.addAndMakeVisible(creditsBody);
 
     audioTitle.setText("AUDIO", juce::dontSendNotification);
-    audioTitle.setFont(juce::FontOptions(13.0f).withStyle("Bold"));
+    audioTitle.setFont(juce::FontOptions(14.0f).withStyle("Bold"));
     oi.addAndMakeVisible(audioTitle);
     hostAudioBanner.setText("Audio Settings Controlled by Host", juce::dontSendNotification);
     hostAudioBanner.setJustificationType(juce::Justification::centred);
-    hostAudioBanner.setFont(juce::FontOptions(16.0f).withStyle("Bold"));
+    hostAudioBanner.setFont(juce::FontOptions(17.0f).withStyle("Bold"));
     oi.addAndMakeVisible(hostAudioBanner);
 #if JucePlugin_Build_Standalone
     ensureStandaloneAudio();
@@ -537,10 +680,10 @@ ModernEdirolSd80Editor::ModernEdirolSd80Editor(ModernEdirolSd80Processor& p)
 #endif
 
     portsTitle.setText("SD-80 USB PORTS  /  MODE  /  THROTTLE", juce::dontSendNotification);
-    portsTitle.setFont(juce::FontOptions(13.0f).withStyle("Bold"));
+    portsTitle.setFont(juce::FontOptions(14.0f).withStyle("Bold"));
     oi.addAndMakeVisible(portsTitle);
-    portAL.setFont(juce::FontOptions(11.0f));
-    portBL.setFont(juce::FontOptions(11.0f));
+    portAL.setFont(juce::FontOptions(12.0f));
+    portBL.setFont(juce::FontOptions(12.0f));
     oi.addAndMakeVisible(portAL);
     oi.addAndMakeVisible(portBL);
     oi.addAndMakeVisible(outABox);
@@ -562,7 +705,7 @@ ModernEdirolSd80Editor::ModernEdirolSd80Editor(ModernEdirolSd80Processor& p)
         proc.apvts, "hostRoute", hostRouteBox);
     oi.addAndMakeVisible(hostRouteBox);
 
-    masterVolL.setText("Module volume (SysEx master — does not lock the physical knob)", juce::dontSendNotification);
+    masterVolL.setText("Module volume (SysEx master - does not lock the physical knob)", juce::dontSendNotification);
     oi.addAndMakeVisible(masterVolL);
     masterVol.setSliderStyle(juce::Slider::LinearHorizontal);
     masterVol.setTextBoxStyle(juce::Slider::TextBoxRight, false, 48, 18);
@@ -571,7 +714,31 @@ ModernEdirolSd80Editor::ModernEdirolSd80Editor(ModernEdirolSd80Processor& p)
     wireLock(masterVol, "masterVol");
     oi.addAndMakeVisible(masterVol);
 
-    audioMidiNote.setText("Standalone: enable your MIDI keyboard under MIDI Input above. SD-80 USB outputs stay as Part A / Part B — do not also enable those as host MIDI outs or you will double-drive the module.",
+    velCurveL.setText("Velocity curve (live keyboard, KEYS, and the computer keys)", juce::dontSendNotification);
+    oi.addAndMakeVisible(velCurveL);
+    velCurveBox.addItem("Linear", 1);
+    velCurveBox.addItem("Soft", 2);
+    velCurveBox.addItem("Loud", 3);
+    velCurveBox.addItem("Fixed", 4);
+    velCurveBox.setSelectedId(proc.getKeysCurve() + 1, juce::dontSendNotification);
+    velCurveBox.onChange = [this]
+    {
+        proc.setKeysCurve(velCurveBox.getSelectedId() - 1);
+    };
+    oi.addAndMakeVisible(velCurveBox);
+    keysVelL.setText("Computer-key velocity (also the Fixed curve)", juce::dontSendNotification);
+    oi.addAndMakeVisible(keysVelL);
+    keysVel.setSliderStyle(juce::Slider::LinearHorizontal);
+    keysVel.setTextBoxStyle(juce::Slider::TextBoxRight, false, 48, 18);
+    keysVel.setRange(1, 127, 1);
+    keysVel.setValue(proc.getScreenKeysVel(), juce::dontSendNotification);
+    keysVel.onValueChange = [this]
+    {
+        proc.setScreenKeysVel((int) std::lround(keysVel.getValue()));
+    };
+    oi.addAndMakeVisible(keysVel);
+
+    audioMidiNote.setText("Standalone: enable your MIDI keyboard under MIDI Input above. SD-80 USB outputs stay as Part A / Part B - do not also enable those as host MIDI outs or you will double-drive the module. KEYS is the on-screen piano.",
                           juce::dontSendNotification);
     oi.addAndMakeVisible(audioMidiNote);
 
@@ -590,21 +757,51 @@ ModernEdirolSd80Editor::ModernEdirolSd80Editor(ModernEdirolSd80Processor& p)
     }
 
     shortcutsTitle.setText("SHORTCUTS", juce::dontSendNotification);
-    shortcutsTitle.setFont(juce::FontOptions(13.0f).withStyle("Bold"));
+    shortcutsTitle.setFont(juce::FontOptions(14.0f).withStyle("Bold"));
     oi.addAndMakeVisible(shortcutsTitle);
     shortcutsBody.setText(
+        "Space  -  play / pause (Player, popped piano roll, Playlist, Studio, and the rest of the window)\n"
+        "AETERNA  -  On or Off. On stands on the incoming melody, not on the keys. Hidden at 0:00 unless the playlist has already played.\n"
+        "KEYS  -  on-screen piano, off until you turn it on. Z row and Q row play the selected part, like FL. + / - change octave.\n"
+        "SCALE  -  mixer deep edit. Twelve cents sliders for this part, -64 to +63. RESET is even.\n"
+        "Velocity curve  -  OPTIONS. Linear, Soft, Loud, or Fixed. Live MIDI and KEYS only. The cassette is unchanged.\n"
         "Right-click any fader, knob, toggle, menu or strip name  -  lock / unlock (survives patch, MIDI import, presets)\n"
         "Shift + click SEL  -  add or remove that part from the live-play selection (multi-select)\n"
         "Click SEL  -  exclusive select that part for Deep Edit and live MIDI\n"
         "Shift + click MUTE  -  mute all parts, or unmute all if everything is already muted\n"
         "Shift + click SOLO  -  unsolo all parts\n"
         "MUTE ALL / UNMUTE ALL / UNSOLO ALL  -  mixer toolbar\n"
-        "When in doubt, press SYNC HARDWARE. The SD-80 is a 2002 USB module and drops messages if you dump too fast.",
+        "When in doubt, press SYNC HARDWARE. The SD-80 is a 2002 USB module and drops messages if you dump too fast.\n"
+        "STUDIO: click a lane to place the current pattern. Double-click a clip to open the piano roll. Shift-click a note for slide.\n"
+        "PATCH: four tones, drag the envelope points, STORE into a local slot. SEND writes the temporary patch on an SD-80 or SD-90 (Native). SAVE / LOAD .mesd80patch works on an SD-20 too.",
         juce::dontSendNotification);
     oi.addAndMakeVisible(shortcutsBody);
 
     emergencyBtn.addListener(this);
     oi.addAndMakeVisible(emergencyBtn);
+
+    auto readable = [](juce::Label& label)
+    {
+        label.setJustificationType(juce::Justification::topLeft);
+        label.setMinimumHorizontalScale(0.9f);
+        label.setFont(juce::FontOptions(14.0f));
+    };
+    readable(creditsBody);
+    readable(midiNote);
+    readable(audioMidiNote);
+    readable(shortcutsBody);
+    readable(hostRouteL);
+    masterVolL.setJustificationType(juce::Justification::centredLeft);
+    masterVolL.setMinimumHorizontalScale(1.0f);
+    masterVolL.setFont(juce::FontOptions(14.0f));
+    velCurveL.setJustificationType(juce::Justification::centredLeft);
+    velCurveL.setMinimumHorizontalScale(1.0f);
+    velCurveL.setFont(juce::FontOptions(14.0f));
+    keysVelL.setJustificationType(juce::Justification::centredLeft);
+    keysVelL.setMinimumHorizontalScale(1.0f);
+    keysVelL.setFont(juce::FontOptions(14.0f));
+    skinTitle.setMinimumHorizontalScale(1.0f);
+    skinTitle.setFont(juce::FontOptions(14.0f).withStyle("Bold"));
 
     hostAAtt = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(proc.apvts, "hostMirrorA", hostMirrorA);
     hostBAtt = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(proc.apvts, "hostMirrorB", hostMirrorB);
@@ -618,6 +815,7 @@ ModernEdirolSd80Editor::ModernEdirolSd80Editor(ModernEdirolSd80Processor& p)
     applySkin();
     bindSelectedPart();
     refreshStripLabels();
+    resized();
     setTab(Tab::Mixer);
     startTimerHz(12);
 
@@ -628,15 +826,18 @@ ModernEdirolSd80Editor::ModernEdirolSd80Editor(ModernEdirolSd80Processor& p)
         dropHint.setText(proc.lastImportSummary, juce::dontSendNotification);
     };
     proc.onSkinChanged = [this] { applySkin(); };
+    proc.onAeternaChanged = [this] { roll.setAeternaMode(proc.getAeternaMode()); };
 }
 
 ModernEdirolSd80Editor::~ModernEdirolSd80Editor()
 {
+    removeKeyListener(this);
     dockPianoRoll();
     if (rollWindow != nullptr)
         rollWindow.reset();
     proc.onImportFinished = nullptr;
     proc.onSkinChanged = nullptr;
+    proc.onAeternaChanged = nullptr;
     categoryList.setModel(nullptr);
     patchList.setModel(nullptr);
     setLookAndFeel(nullptr);
@@ -679,6 +880,7 @@ void ModernEdirolSd80Editor::ensureStandaloneAudio()
     audioSelector = std::make_unique<juce::AudioDeviceSelectorComponent>(
         holder->deviceManager, 0, 2, 0, 2, true, false, true, false);
     optionsInner.addAndMakeVisible(*audioSelector);
+    colourAudioSelector(*audioSelector, lnf);
     hostAudioBanner.setVisible(false);
     hostAudioDummy.setVisible(false);
     resized();
@@ -725,6 +927,8 @@ void ModernEdirolSd80Editor::applySkin()
     playlistQueueBox.setColour(juce::ListBox::outlineColourId, lnf.border);
     mfxWarn.setColour(juce::Label::textColourId, lnf.muteRed);
     masterVolL.setColour(juce::Label::textColourId, lnf.muted);
+    velCurveL.setColour(juce::Label::textColourId, lnf.muted);
+    keysVelL.setColour(juce::Label::textColourId, lnf.muted);
     hostRouteL.setColour(juce::Label::textColourId, lnf.muted);
     audioMidiNote.setColour(juce::Label::textColourId, lnf.muted);
     creditsBody.setColour(juce::Label::textColourId, lnf.text);
@@ -743,6 +947,8 @@ void ModernEdirolSd80Editor::applySkin()
     donateBtn.setColour(juce::TextButton::buttonColourId, lnf.amber);
     donateBtn.setColour(juce::TextButton::textColourOffId, lnf.bg);
     donateBtn.setColour(juce::TextButton::textColourOnId, lnf.bg);
+    if (audioSelector != nullptr)
+        colourAudioSelector(*audioSelector, lnf);
     patchSearch.setTextToShowWhenEmpty("Search patches", lnf.muted);
 
     for (auto& st : strips)
@@ -766,7 +972,17 @@ void ModernEdirolSd80Editor::applySkin()
     tabMixer.setColour(juce::TextButton::buttonOnColourId, lnf.amber);
     tabPlayer.setColour(juce::TextButton::buttonOnColourId, lnf.amber);
     tabPlaylist.setColour(juce::TextButton::buttonOnColourId, lnf.amber);
+    tabStudio.setColour(juce::TextButton::buttonOnColourId, lnf.amber);
+    tabPatch.setColour(juce::TextButton::buttonOnColourId, lnf.amber);
     tabOptions.setColour(juce::TextButton::buttonOnColourId, lnf.amber);
+    keysButton.setColour(juce::TextButton::buttonOnColourId, lnf.amber);
+    keysButton.setColour(juce::TextButton::textColourOnId, lnf.bg);
+    scaleButton.setColour(juce::TextButton::buttonOnColourId, lnf.teal);
+    scaleButton.setColour(juce::TextButton::textColourOnId, lnf.bg);
+    secFilter.setColour(juce::Label::textColourId, lnf.amber);
+    secEnv.setColour(juce::Label::textColourId, lnf.amber);
+    secVib.setColour(juce::Label::textColourId, lnf.amber);
+    secSend.setColour(juce::Label::textColourId, lnf.amber);
     deck.loop.setColour(juce::TextButton::buttonOnColourId, lnf.teal);
     playlistPlay.setColour(juce::TextButton::buttonColourId, lnf.teal);
     playlistPlay.setColour(juce::TextButton::textColourOffId, lnf.bg);
@@ -806,6 +1022,10 @@ void ModernEdirolSd80Editor::applySkin()
     }
     deck.setPalette(kSkins[proc.getSkinIndex()]);
     roll.setPalette(kSkins[proc.getSkinIndex()]);
+    if (studio)
+        studio->applyPalette(kSkins[proc.getSkinIndex()]);
+    if (patchEd)
+        patchEd->applyPalette(kSkins[proc.getSkinIndex()]);
     rollAwayLabel.setColour(juce::Label::textColourId, lnf.muted);
     rollDockBtn.setColour(juce::TextButton::buttonColourId, lnf.surface2);
     rollDockBtn.setColour(juce::TextButton::textColourOffId, lnf.text);
@@ -817,24 +1037,37 @@ void ModernEdirolSd80Editor::applySkin()
 
 void ModernEdirolSd80Editor::setTab(Tab t)
 {
+    if (t == Tab::Playlist)
+        t = Tab::Player;
     tab = t;
+    grabKeyboardFocus();
     tabMixer.setToggleState(t == Tab::Mixer, juce::dontSendNotification);
     tabPlayer.setToggleState(t == Tab::Player, juce::dontSendNotification);
     tabPlaylist.setToggleState(t == Tab::Playlist, juce::dontSendNotification);
+    tabStudio.setToggleState(t == Tab::Studio, juce::dontSendNotification);
+    tabPatch.setToggleState(t == Tab::Patch, juce::dontSendNotification);
     tabOptions.setToggleState(t == Tab::Options, juce::dontSendNotification);
     mixerPage.setVisible(t == Tab::Mixer);
     playerPage.setVisible(t == Tab::Player);
     playlistPage.setVisible(t == Tab::Playlist);
+    studioPage.setVisible(t == Tab::Studio);
+    patchPage.setVisible(t == Tab::Patch);
     optionsPage.setVisible(t == Tab::Options);
     roll.setActive(t == Tab::Player || rollPopped);
-    playlistSlotA.setActive(t == Tab::Playlist);
-    playlistSlotB.setActive(t == Tab::Playlist);
+    playlistSlotA.setActive(t == Tab::Player);
+    playlistSlotB.setActive(t == Tab::Player);
+    if (studio)
+        studio->setActive(t == Tab::Studio);
     if (t == Tab::Mixer)
         dropHint.setText("Drop a .mid on the mixer to auto-assign banks, programs and mix. Live MIDI defaults to Part A as-played so an FL piano roll matches.", juce::dontSendNotification);
     else if (t == Tab::Player)
-        dropHint.setText("Drop a .mid on the cassette. Notes fall toward the keyboard. POP OUT or FULL the piano-roll; minimize docks it back.", juce::dontSendNotification);
+        dropHint.setText("Drop one .mid for the cassette. Drop several to arm Part A. Click Part B to load a second file.", juce::dontSendNotification);
     else if (t == Tab::Playlist)
         dropHint.setText("Drop .mid files to arm. PLAY / PAUSE / STOP / LOOP on PLAYER follow this. LOOP ALL / LOOP 1 / off.", juce::dontSendNotification);
+    else if (t == Tab::Studio)
+        dropHint.setText("STUDIO writes SD-80 songs. Drop a .mid to import onto the selected lane, or a .mesd80song to load a project.", juce::dontSendNotification);
+    else if (t == Tab::Patch)
+        dropHint.setText("PATCH designs a user tone. Drop a .mesd80patch to load it. SEND reaches SD-80 / SD-90. SAVE works for SD-20 too.", juce::dontSendNotification);
     else
         dropHint.setText("Skins and locks are stored in Crimson Redstone app settings.", juce::dontSendNotification);
 }
@@ -868,12 +1101,14 @@ void ModernEdirolSd80Editor::paint(juce::Graphics& g)
         g.fillRect(getLocalBounds());
         g.setColour(lnf.teal);
         g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(12.0f), 12.0f, 2.0f);
-        g.setFont(juce::FontOptions(26.0f).withStyle("Bold"));
+        g.setFont(juce::FontOptions(27.0f).withStyle("Bold"));
         const auto msg = (tab == Tab::Player)
-                             ? "Drop MIDI file onto the cassette"
-                             : (tab == Tab::Playlist)
-                                   ? "Drop MIDI files onto the playlist"
-                                   : "Drop MIDI file to configure the SD-80";
+                             ? "Drop one MIDI for the cassette, or several to arm Part A"
+                             : (tab == Tab::Studio)
+                                         ? "Drop MIDI or a .mesd80song onto STUDIO"
+                                         : (tab == Tab::Patch)
+                                               ? "Drop a .mesd80patch"
+                                               : "Drop MIDI file to configure the SD-80";
         g.drawText(msg, getLocalBounds(), juce::Justification::centred);
     }
 }
@@ -894,13 +1129,13 @@ void ModernEdirolSd80Editor::resized()
     savePreset.setBounds(tools.removeFromRight(110).reduced(2));
 
     auto t2 = top.reduced(16, 0);
-    partAButton.setBounds(t2.removeFromLeft(118).reduced(2));
-    partBButton.setBounds(t2.removeFromLeft(128).reduced(2));
-    t2.removeFromLeft(8);
-    tabMixer.setBounds(t2.removeFromLeft(90).reduced(2));
-    tabPlayer.setBounds(t2.removeFromLeft(90).reduced(2));
-    tabPlaylist.setBounds(t2.removeFromLeft(100).reduced(2));
-    tabOptions.setBounds(t2.removeFromLeft(100).reduced(2));
+    tabMixer.setBounds(t2.removeFromLeft(72).reduced(2));
+    tabPlayer.setBounds(t2.removeFromLeft(74).reduced(2));
+    tabStudio.setBounds(t2.removeFromLeft(78).reduced(2));
+    tabPlaylist.setVisible(false);
+    tabPatch.setBounds(t2.removeFromLeft(70).reduced(2));
+    tabOptions.setBounds(t2.removeFromLeft(82).reduced(2));
+    keysButton.setBounds(t2.removeFromRight(52).reduced(2));
 
     dropHint.setBounds(getLocalBounds().removeFromBottom(24).reduced(16, 2));
 
@@ -908,8 +1143,21 @@ void ModernEdirolSd80Editor::resized()
     mixerPage.setBounds(content);
     playerPage.setBounds(content);
     playlistPage.setBounds(content);
+    studioPage.setBounds(content);
+    patchPage.setBounds(content);
     optionsPage.setBounds(content);
     optionsView.setBounds(optionsPage.getLocalBounds());
+    screenKeys.setVisible(proc.getScreenKeysOn());
+    if (proc.getScreenKeysOn())
+    {
+        screenKeys.setBounds(getWidth() > 40 ? juce::Rectangle<int>(12, getHeight() - 24 - 96, getWidth() - 24, 92)
+                                             : juce::Rectangle<int>());
+        screenKeys.toFront(false);
+    }
+    if (studio)
+        studio->setBounds(studioPage.getLocalBounds());
+    if (patchEd)
+        patchEd->setBounds(patchPage.getLocalBounds());
 
     {
         auto mp = mixerPage.getLocalBounds();
@@ -917,6 +1165,9 @@ void ModernEdirolSd80Editor::resized()
         auto inspect = mp.removeFromRight(side).reduced(16, 12);
         auto fx = mp.removeFromBottom(252).reduced(10, 8);
         auto mixBar = mp.removeFromTop(28).reduced(8, 2);
+        partAButton.setBounds(mixBar.removeFromLeft(118).reduced(2));
+        partBButton.setBounds(mixBar.removeFromLeft(128).reduced(2));
+        mixBar.removeFromLeft(6);
         muteAllBtn.setBounds(mixBar.removeFromLeft(100).reduced(2));
         unmuteAllBtn.setBounds(mixBar.removeFromLeft(110).reduced(2));
         unsoloAllBtn.setBounds(mixBar.removeFromLeft(110).reduced(2));
@@ -938,7 +1189,9 @@ void ModernEdirolSd80Editor::resized()
         }
 
         inspectorTitle.setBounds(inspect.removeFromTop(18));
-        patchNameLabel.setBounds(inspect.removeFromTop(24));
+        auto scaleRow = inspect.removeFromTop(24);
+        scaleButton.setBounds(scaleRow.removeFromRight(72).reduced(2));
+        patchNameLabel.setBounds(scaleRow);
         auto pick = inspect.removeFromTop(26);
         mapBox.setBounds(pick.removeFromLeft(150).reduced(2));
         drumToggle.setBounds(pick.reduced(2));
@@ -953,21 +1206,47 @@ void ModernEdirolSd80Editor::resized()
         auto route = inspect.removeFromTop(26);
         mfxSel.setBounds(route.removeFromLeft(route.getWidth() / 2).reduced(2));
         outAsg.setBounds(route.reduced(2));
-        porta.setBounds(inspect.removeFromTop(22));
+        porta.setBounds(inspect.removeFromTop(22).removeFromLeft(inspect.getWidth() / 2));
 
-        sd80lock::Slider* knobs[] = { &cut, &res, &atk, &dec, &rel, &vr, &vd, &vdl, &expr, &rev, &cho, &mfxSend, &portaT };
-        juce::Label* labs[] = { &cutL, &resL, &atkL, &decL, &relL, &vrL, &vdL, &vdlL, &exprL, &revL, &choL, &mfxL, &portaL };
-        const int cols = 5;
-        const int cellW = juce::jmax(1, inspect.getWidth() / cols);
-        const int cellH = juce::jmin(86, juce::jmax(70, inspect.getHeight() / 3));
-        for (int i = 0; i < 13; ++i)
+        const bool showScale = scaleOpen;
+        scaleTune.setVisible(showScale);
+        for (auto* s : { &cut, &res, &atk, &dec, &rel, &vr, &vd, &vdl, &expr, &rev, &cho, &mfxSend, &portaT })
+            s->setVisible(! showScale);
+        for (auto* l : { &cutL, &resL, &atkL, &decL, &relL, &vrL, &vdL, &vdlL, &exprL, &revL, &choL, &mfxL, &portaL,
+                         &secFilter, &secEnv, &secVib, &secSend })
+            l->setVisible(! showScale);
+        if (showScale)
         {
-            const int col = i % cols;
-            const int rowI = i / cols;
-            auto cell = juce::Rectangle<int>(inspect.getX() + col * cellW,
-                                             inspect.getY() + rowI * cellH, cellW, cellH);
-            labs[i]->setBounds(cell.removeFromTop(14));
-            knobs[i]->setBounds(cell.reduced(4, 0));
+            scaleTune.setBounds(inspect.reduced(0, 4));
+        }
+        else
+        {
+            const int rowH = juce::jmax(68, inspect.getHeight() / 4);
+            auto placeRow = [&](juce::Label& title, sd80lock::Slider** knobs, juce::Label** labs, int n)
+            {
+                auto row = inspect.removeFromTop(rowH);
+                title.setBounds(row.removeFromTop(16));
+                const int knobW = juce::jlimit(58, 84, row.getWidth() / 5);
+                auto group = row.withSizeKeepingCentre(juce::jmin(row.getWidth(), knobW * n), row.getHeight());
+                for (int i = 0; i < n; ++i)
+                {
+                    auto cell = group.removeFromLeft(knobW);
+                    labs[i]->setBounds(cell.removeFromTop(14));
+                    knobs[i]->setBounds(cell.reduced(4, 0));
+                }
+            };
+            sd80lock::Slider* fK[] = { &cut, &res };
+            juce::Label* fL[] = { &cutL, &resL };
+            sd80lock::Slider* eK[] = { &atk, &dec, &rel };
+            juce::Label* eL[] = { &atkL, &decL, &relL };
+            sd80lock::Slider* vK[] = { &vr, &vd, &vdl };
+            juce::Label* vL[] = { &vrL, &vdL, &vdlL };
+            sd80lock::Slider* sK[] = { &expr, &rev, &cho, &mfxSend, &portaT };
+            juce::Label* sL[] = { &exprL, &revL, &choL, &mfxL, &portaL };
+            placeRow(secFilter, fK, fL, 2);
+            placeRow(secEnv, eK, eL, 3);
+            placeRow(secVib, vK, vL, 3);
+            placeRow(secSend, sK, sL, 5);
         }
 
         auto fxHead = fx.removeFromTop(22);
@@ -1020,13 +1299,27 @@ void ModernEdirolSd80Editor::resized()
     }
 
     {
-        auto pp = playerPage.getLocalBounds().reduced(20, 16);
-        playerWarn.setBounds(pp.removeFromBottom(20));
-        playerHelp.setBounds(pp.removeFromBottom(44));
+        auto pp = playerPage.getLocalBounds().reduced(12, 8);
+        playerWarn.setBounds(pp.removeFromBottom(18));
+        playerHelp.setBounds(pp.removeFromBottom(20));
         pp.removeFromBottom(4);
-        const int deckH = juce::jlimit(210, 300, pp.getHeight() * 2 / 5);
-        deck.setBounds(pp.removeFromTop(deckH));
-        pp.removeFromTop(8);
+
+        auto left = pp.removeFromLeft(juce::jlimit(340, 460, pp.getWidth() * 34 / 100));
+        pp.removeFromLeft(8);
+        const int deckH = juce::jmin(210, juce::jmax(188, left.getHeight() * 3 / 10));
+        deck.setBounds(left.removeFromTop(deckH));
+        left.removeFromTop(6);
+        auto brow = left.removeFromTop(26);
+        playlistAddBtn.setBounds(brow.removeFromLeft(64).reduced(1, 0));
+        playlistClearBtn.setBounds(brow.removeFromLeft(72).reduced(1, 0));
+        playlistStatus.setBounds(brow.reduced(6, 0));
+        left.removeFromTop(4);
+        auto cards = left.removeFromTop(juce::jmin(112, juce::jmax(72, left.getHeight() / 3)));
+        playlistSlotA.setBounds(cards.removeFromLeft(cards.getWidth() / 2).reduced(2, 0));
+        playlistSlotB.setBounds(cards.reduced(2, 0));
+        left.removeFromTop(4);
+        playlistQueueHdr.setBounds(left.removeFromTop(16));
+        playlistQueueBox.setBounds(left);
         if (rollPopped)
         {
             auto away = pp;
@@ -1042,44 +1335,18 @@ void ModernEdirolSd80Editor::resized()
     }
 
     {
-        auto dp = playlistPage.getLocalBounds().reduced(28, 18);
-        playlistTitle.setBounds(dp.removeFromTop(22));
-        dp.removeFromTop(4);
-        playlistHelp.setBounds(dp.removeFromTop(22));
-        dp.removeFromTop(10);
-        auto row = dp.removeFromTop(36);
-        playlistPlay.setBounds(row.removeFromLeft(96).reduced(2));
-        playlistStop.setBounds(row.removeFromLeft(96).reduced(2));
-        playlistAddBtn.setBounds(row.removeFromLeft(88).reduced(2));
-        playlistClearBtn.setBounds(row.removeFromLeft(88).reduced(2));
-        row.removeFromLeft(12);
-        playlistStatus.setBounds(row);
-        dp.removeFromTop(14);
-        auto slots = dp.removeFromTop(118);
-        const int gap = 12;
-        auto left = slots.removeFromLeft((slots.getWidth() - gap) / 2);
-        slots.removeFromLeft(gap);
-        playlistSlotA.setBounds(left);
-        playlistSlotB.setBounds(slots);
-        dp.removeFromTop(14);
-        playlistQueueHdr.setBounds(dp.removeFromTop(20));
-        dp.removeFromTop(4);
-        playlistQueueBox.setBounds(dp);
-    }
-
-    {
         const int innerW = juce::jmax(700, optionsView.getWidth() - 24);
-        optionsInner.setSize(innerW, 1680);
+        optionsInner.setSize(innerW, 2100);
         auto op = optionsInner.getLocalBounds().reduced(24, 16);
         optionsTitle.setBounds(op.removeFromTop(28));
         donateBtn.setBounds(op.removeFromTop(40).reduced(0, 4));
-        creditsBody.setBounds(op.removeFromTop(80));
+        creditsBody.setBounds(op.removeFromTop(96));
         audioTitle.setBounds(op.removeFromTop(22));
         if (audioSelector != nullptr)
         {
             hostAudioBanner.setBounds({});
             hostAudioDummy.setBounds({});
-            audioSelector->setBounds(op.removeFromTop(460));
+            audioSelector->setBounds(op.removeFromTop(520));
         }
         else
         {
@@ -1111,16 +1378,20 @@ void ModernEdirolSd80Editor::resized()
         outBBox.setBounds(ports.reduced(2));
         auto modeRow = op.removeFromTop(32);
         modeBox.setBounds(modeRow.removeFromLeft(160).reduced(2));
-        throttleBox.setBounds(modeRow.removeFromLeft(100).reduced(2));
+        throttleBox.setBounds(modeRow.removeFromLeft(120).reduced(2));
         auto mir = op.removeFromTop(28);
         hostMirrorA.setBounds(mir.removeFromLeft(mir.getWidth() / 2));
         hostMirrorB.setBounds(mir);
-        midiNote.setBounds(op.removeFromTop(56));
-        hostRouteL.setBounds(op.removeFromTop(36));
+        midiNote.setBounds(op.removeFromTop(78));
+        hostRouteL.setBounds(op.removeFromTop(40));
         hostRouteBox.setBounds(op.removeFromTop(28).removeFromLeft(280).reduced(0, 2));
-        masterVolL.setBounds(op.removeFromTop(18));
+        masterVolL.setBounds(op.removeFromTop(22));
         masterVol.setBounds(op.removeFromTop(28));
-        audioMidiNote.setBounds(op.removeFromTop(44));
+        velCurveL.setBounds(op.removeFromTop(18));
+        velCurveBox.setBounds(op.removeFromTop(28).removeFromLeft(220).reduced(0, 2));
+        keysVelL.setBounds(op.removeFromTop(18));
+        keysVel.setBounds(op.removeFromTop(28));
+        audioMidiNote.setBounds(op.removeFromTop(64));
         pullHardwareBtn.setBounds(op.removeFromTop(36).removeFromLeft(220));
         op.removeFromTop(8);
         skinTitle.setBounds(op.removeFromTop(22));
@@ -1137,7 +1408,7 @@ void ModernEdirolSd80Editor::resized()
             skinButtons[(size_t) i].setBounds(row.removeFromLeft(sw).reduced(3, 2));
         }
         shortcutsTitle.setBounds(op.removeFromTop(22));
-        shortcutsBody.setBounds(op.removeFromTop(140));
+        shortcutsBody.setBounds(op.removeFromTop(280));
         emergencyBtn.setBounds(op.removeFromTop(36).removeFromLeft(280));
     }
 }
@@ -1149,7 +1420,8 @@ juce::Rectangle<int> ModernEdirolSd80Editor::headerArea() const
 
 juce::Rectangle<int> ModernEdirolSd80Editor::contentArea() const
 {
-    return { 0, 74, getWidth(), getHeight() - 74 - 24 };
+    const int keysH = proc.getScreenKeysOn() ? 100 : 0;
+    return { 0, 74, getWidth(), getHeight() - 74 - 24 - keysH };
 }
 
 void ModernEdirolSd80Editor::rebuildDeviceLists()
@@ -1200,6 +1472,8 @@ void ModernEdirolSd80Editor::refreshStripLabels()
         wireLock(st.name, ModernEdirolSd80Processor::pid(part, "pc"));
         st.select.setToggleState(proc.isPartSelected(part), juce::dontSendNotification);
     }
+    partAButton.setToggleState(group == 0, juce::dontSendNotification);
+    partBButton.setToggleState(group == 1, juce::dontSendNotification);
 }
 
 void ModernEdirolSd80Editor::bindSelectedPart()
@@ -1234,10 +1508,13 @@ void ModernEdirolSd80Editor::bindSelectedPart()
     bindS(portaTA, portaT, "portaT");
     portaA = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
         proc.apvts, ModernEdirolSd80Processor::pid(part, "porta"), porta);
-    drumA = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
-        proc.apvts, ModernEdirolSd80Processor::pid(part, "drum"), drumToggle);
+    drumA.reset();
     wireLock(porta, ModernEdirolSd80Processor::pid(part, "porta"));
     wireLock(drumToggle, ModernEdirolSd80Processor::pid(part, "drum"));
+    const bool wasLock = patchUiLock;
+    patchUiLock = true;
+    drumToggle.setToggleState(proc.isPartDrum(part), juce::dontSendNotification);
+    patchUiLock = wasLock;
     wireLock(mapBox, ModernEdirolSd80Processor::pid(part, "map"));
     wireLock(mfxSel, ModernEdirolSd80Processor::pid(part, "mfxSel"));
     wireLock(outAsg, ModernEdirolSd80Processor::pid(part, "outAsg"));
@@ -1248,6 +1525,7 @@ void ModernEdirolSd80Editor::bindSelectedPart()
                          juce::dontSendNotification);
     outAsg.setSelectedId((int) proc.apvts.getRawParameterValue(ModernEdirolSd80Processor::pid(part, "outAsg"))->load() + 1,
                          juce::dontSendNotification);
+    refreshScaleTune();
 
     const int rt = (int) proc.apvts.getRawParameterValue("reverbType")->load();
     reverbTypeBtn.setButtonText(juce::String("Reverb: ") + gm2ReverbTypeName(rt));
@@ -1308,11 +1586,16 @@ void ModernEdirolSd80Editor::rebuildPatchBrowser()
         patchModel.items.push_back(&e);
     }
 
+    const bool wasLock = patchUiLock;
+    patchUiLock = true;
     categoryList.updateContent();
-    categoryList.selectRow(catModel.selected, false);
+    categoryList.selectRow(catModel.selected, true);
     patchList.updateContent();
     if (selectRow >= 0)
-        patchList.selectRow(selectRow, false);
+        patchList.selectRow(selectRow, true);
+    else
+        patchList.deselectAllRows();
+    patchUiLock = wasLock;
 }
 
 void ModernEdirolSd80Editor::pickPatchAt(int row)
@@ -1321,15 +1604,19 @@ void ModernEdirolSd80Editor::pickPatchAt(int row)
         return;
     const int part = proc.getSelectedPart();
     if (proc.isLocked(ModernEdirolSd80Processor::pid(part, "msb"))
-        || proc.isLocked(ModernEdirolSd80Processor::pid(part, "pc")))
+        || proc.isLocked(ModernEdirolSd80Processor::pid(part, "pc"))
+        || proc.isLocked(ModernEdirolSd80Processor::pid(part, "map")))
         return;
     auto* e = patchModel.items[(size_t) row];
-    proc.setParamInt(ModernEdirolSd80Processor::pid(part, "msb"), e->msb);
-    proc.setParamInt(ModernEdirolSd80Processor::pid(part, "lsb"), e->lsb);
-    proc.setParamInt(ModernEdirolSd80Processor::pid(part, "pc"), e->pc);
-    proc.enqueuePartPatch(part);
-    refreshStripLabels();
+    const bool wasLock = patchUiLock;
+    patchUiLock = true;
+    proc.applyListedPatch(part, (int) e->map, e->drum, e->msb, e->lsb, e->pc);
+    mapBox.setSelectedId((int) e->map + 1, juce::dontSendNotification);
+    drumToggle.setToggleState(e->drum, juce::dontSendNotification);
     patchNameLabel.setText(e->name, juce::dontSendNotification);
+    rebuildPatchBrowser();
+    patchUiLock = wasLock;
+    refreshStripLabels();
 }
 
 void ModernEdirolSd80Editor::updateFxLabels()
@@ -1424,6 +1711,26 @@ void ModernEdirolSd80Editor::showChorusMenu()
                     });
 }
 
+void ModernEdirolSd80Editor::loadPartBFile()
+{
+    auto chooser = std::make_shared<juce::FileChooser>(
+        "Load Part B MIDI",
+        juce::File::getSpecialLocation(juce::File::userDocumentsDirectory),
+        "*.mid;*.midi");
+    chooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                         [this, chooser](const juce::FileChooser& fc)
+                         {
+                             auto f = fc.getResult();
+                             if (f == juce::File())
+                                 return;
+                             proc.loadPartB(f);
+                             if (! proc.partBEnabled())
+                                 proc.setPartBEnabled(true);
+                             updatePlaylistUi();
+                             updatePlayerUi();
+                         });
+}
+
 void ModernEdirolSd80Editor::loadPlayerFile()
 {
     auto chooser = std::make_shared<juce::FileChooser>(
@@ -1436,6 +1743,7 @@ void ModernEdirolSd80Editor::loadPlayerFile()
                              auto f = fc.getResult();
                              if (f != juce::File())
                              {
+                                 proc.dawStop();
                                  proc.disarmPlaylist();
                                  proc.player.load(f);
                                  updatePlayerUi();
@@ -1450,20 +1758,29 @@ void ModernEdirolSd80Editor::updatePlayerUi()
     const int group = proc.displayPartGroup();
     const bool armed = proc.playlistIsArmed();
     juce::String title = view.getName();
-    if (armed && view.isLoaded())
+    if (! proc.studioDisplayOn() && armed && view.isLoaded())
         title += (group ? "  [B]" : "  [A]");
     deck.setState(view.isLoaded(), view.isPlaying(), title,
                   view.getPosition(), view.getLength());
     roll.attach(&view);
     roll.setPortLetter(group ? 'B' : 'A');
-    if (armed)
+    if (proc.studioDisplayOn())
     {
+        roll.setBanner("STUDIO");
+        deck.setLooping(false);
+        deck.apply.setEnabled(false);
+        deck.apply.setTooltip("STUDIO is on the roll. PLAY / PAUSE / STOP follow the songwriter.");
+    }
+    else if (armed)
+    {
+        roll.setBanner({});
         deck.setPlaylistLoopVisual(proc.getPlaylistLoop());
         deck.apply.setEnabled(false);
         deck.apply.setTooltip("Playlist is armed. Setup is sent when each file loads onto a deck.");
     }
     else
     {
+        roll.setBanner({});
         deck.setLooping(proc.player.isLooping());
         deck.apply.setEnabled(true);
         deck.apply.setTooltip("Push this tape's bank/PC/mix to the mixer and the SD-80");
@@ -1479,6 +1796,16 @@ void ModernEdirolSd80Editor::updatePlayerUi()
     }
     roll.setPartNames(names);
     roll.setSilencedMask(sil);
+    roll.setAeternaLinger(proc.playlistMayLinger());
+    std::uint32_t drums = 0;
+    for (int i = 0; i < 16; ++i)
+    {
+        if (i == 9 || proc.isPartDrum(base + i))
+            drums |= (1u << i);
+    }
+    roll.setAeternaDrums(drums);
+    const double bpm = proc.studioDisplayOn() ? proc.daw.getBpm() : view.getBpm();
+    roll.setAeternaBpm(bpm);
 }
 
 void ModernEdirolSd80Editor::syncRollChrome()
@@ -1506,6 +1833,7 @@ void ModernEdirolSd80Editor::popPianoRoll(bool fullScreen)
     if (rollWindow->isMinimised())
         rollWindow->setMinimised(false);
     rollWindow->toFront(true);
+    roll.grabKeyboardFocus();
     if (fullScreen)
         rollWindow->setFullScreen(true);
     rollPopped = true;
@@ -1541,6 +1869,7 @@ void ModernEdirolSd80Editor::updatePlaylistUi()
 {
     playlistSlotA.setSpent(proc.playlistSlotSpent(0));
     playlistSlotB.setSpent(proc.playlistSlotSpent(1));
+    playlistSlotB.setEnabledFlag(proc.partBEnabled());
     playlistSlotA.repaint();
     playlistSlotB.repaint();
     playlistStatus.setText(proc.playlistStatus(), juce::dontSendNotification);
@@ -1593,7 +1922,7 @@ void ModernEdirolSd80Editor::confirmDanger(const juce::String& titleText, const 
             : onOk(std::move(cb)), require(req), showDont(ds)
         {
             title.setText(t, juce::dontSendNotification);
-            title.setFont(juce::FontOptions(16.0f).withStyle("Bold"));
+            title.setFont(juce::FontOptions(17.0f).withStyle("Bold"));
             title.setColour(juce::Label::textColourId, juce::Colours::whitesmoke);
             body.setMultiLine(true);
             body.setReadOnly(true);
@@ -1604,7 +1933,7 @@ void ModernEdirolSd80Editor::confirmDanger(const juce::String& titleText, const 
             body.setColour(juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
             body.setColour(juce::TextEditor::focusedOutlineColourId, juce::Colours::transparentBlack);
             body.setColour(juce::TextEditor::textColourId, juce::Colours::whitesmoke);
-            body.setFont(juce::FontOptions(13.0f));
+            body.setFont(juce::FontOptions(14.0f));
             body.setText(b, false);
             addAndMakeVisible(title);
             addAndMakeVisible(body);
@@ -1655,11 +1984,197 @@ void ModernEdirolSd80Editor::confirmDanger(const juce::String& titleText, const 
     opt.launchAsync();
 }
 
+static bool isTextEntry(juce::Component* c)
+{
+    for (auto* p = c; p != nullptr; p = p->getParentComponent())
+        if (dynamic_cast<juce::TextEditor*>(p) != nullptr)
+            return true;
+    return false;
+}
+
+static int computerSemitone(const juce::KeyPress& key)
+{
+    const auto ch = juce::CharacterFunctions::toLowerCase(key.getTextCharacter());
+    switch (ch)
+    {
+        case 'z': return 0;
+        case 's': return 1;
+        case 'x': return 2;
+        case 'd': return 3;
+        case 'c': return 4;
+        case 'v': return 5;
+        case 'g': return 6;
+        case 'b': return 7;
+        case 'h': return 8;
+        case 'n': return 9;
+        case 'j': return 10;
+        case 'm': return 11;
+        case ',': return 12;
+        case 'l': return 13;
+        case '.': return 14;
+        case ';': return 15;
+        case '/': return 16;
+        case 'q': return 12;
+        case '2': return 13;
+        case 'w': return 14;
+        case '3': return 15;
+        case 'e': return 16;
+        case 'r': return 17;
+        case '5': return 18;
+        case 't': return 19;
+        case '6': return 20;
+        case 'y': return 21;
+        case '7': return 22;
+        case 'u': return 23;
+        case 'i': return 24;
+        case '9': return 25;
+        case 'o': return 26;
+        case '0': return 27;
+        case 'p': return 28;
+        default: return -1;
+    }
+}
+
+int ModernEdirolSd80Editor::pitchForComputerKey(const juce::KeyPress& key) const
+{
+    const int semi = computerSemitone(key);
+    if (semi < 0)
+        return -1;
+    return juce::jlimit(0, 127, (proc.getScreenKeysOct() + 1) * 12 + semi);
+}
+
+void ModernEdirolSd80Editor::releaseComputerKeys()
+{
+    for (int i = 0; i < compCount; ++i)
+    {
+        screenKeys.setLit(compPitch[i], false);
+        proc.dawPreview(proc.getSelectedPart(), compPitch[i], false);
+    }
+    compCount = 0;
+}
+
+void ModernEdirolSd80Editor::refreshScaleTune()
+{
+    int v[12];
+    const int part = proc.getSelectedPart();
+    for (int i = 0; i < 12; ++i)
+        v[i] = proc.getScaleTune(part, i);
+    scaleTune.setValues(v);
+}
+
+bool ModernEdirolSd80Editor::keyPressed(const juce::KeyPress& key, juce::Component* originating)
+{
+    if (proc.getScreenKeysOn() && ! isTextEntry(originating))
+    {
+        const int pitch = pitchForComputerKey(key);
+        if (pitch >= 0)
+        {
+            const int code = key.getKeyCode();
+            for (int i = 0; i < compCount; ++i)
+                if (compCode[i] == code)
+                    return true;
+            if (compCount < 32)
+            {
+                compCode[compCount] = code;
+                compPitch[compCount] = pitch;
+                ++compCount;
+                screenKeys.setLit(pitch, true);
+                proc.dawPreview(proc.getSelectedPart(), pitch, true, proc.getScreenKeysVel());
+            }
+            return true;
+        }
+    }
+    if (key.getKeyCode() != juce::KeyPress::spaceKey)
+        return false;
+    if (key.getModifiers().isAnyModifierKeyDown())
+        return false;
+    if (isTextEntry(originating))
+        return false;
+    if (spaceLatched)
+        return true;
+    spaceLatched = true;
+    toggleTransport();
+    return true;
+}
+
+bool ModernEdirolSd80Editor::keyStateChanged(bool, juce::Component*)
+{
+    if (! juce::KeyPress::isKeyCurrentlyDown(juce::KeyPress::spaceKey))
+        spaceLatched = false;
+    int w = 0;
+    for (int i = 0; i < compCount; ++i)
+    {
+        if (juce::KeyPress::isKeyCurrentlyDown(compCode[i]))
+        {
+            if (w != i)
+            {
+                compCode[w] = compCode[i];
+                compPitch[w] = compPitch[i];
+            }
+            ++w;
+        }
+        else
+        {
+            screenKeys.setLit(compPitch[i], false);
+            proc.dawPreview(proc.getSelectedPart(), compPitch[i], false);
+        }
+    }
+    compCount = w;
+    return false;
+}
+
+void ModernEdirolSd80Editor::toggleTransport()
+{
+    if (tab == Tab::Studio || proc.studioDisplayOn())
+    {
+        if (proc.daw.isPlaying())
+            proc.dawPause();
+        else
+        {
+            proc.dawPlay();
+            roll.snapDisplayToEngine();
+        }
+        updatePlayerUi();
+        updatePlaylistUi();
+        return;
+    }
+
+    if (tab == Tab::Playlist || proc.playlistIsArmed())
+    {
+        if (proc.playlistSlotPlaying(0) || proc.playlistSlotPlaying(1))
+            proc.playlistPause();
+        else
+        {
+            proc.dawStop();
+            proc.playlistPlay();
+            roll.snapDisplayToEngine();
+        }
+        updatePlayerUi();
+        updatePlaylistUi();
+        return;
+    }
+
+    if (proc.player.isPlaying())
+        proc.player.pause();
+    else
+    {
+        proc.dawStop();
+        proc.playlistStop();
+        proc.player.play();
+        roll.snapDisplayToEngine();
+    }
+    updatePlayerUi();
+    updatePlaylistUi();
+}
+
 void ModernEdirolSd80Editor::timerCallback()
 {
+    if (spaceLatched && ! juce::KeyPress::isKeyCurrentlyDown(juce::KeyPress::spaceKey))
+        spaceLatched = false;
     ensureStandaloneAudio();
+    const int thr = (int) proc.apvts.getRawParameterValue("throttle")->load();
     queueLabel.setText("USB queue  " + juce::String(proc.queueDepth()) + "  |  throttle "
-                           + juce::String((int) proc.apvts.getRawParameterValue("throttle")->load()) + " ms",
+                           + (thr <= 0 ? juce::String("off") : juce::String(thr) + " ms"),
                        juce::dontSendNotification);
     if (proc.consumeDumpDirty())
     {
@@ -1668,16 +2183,12 @@ void ModernEdirolSd80Editor::timerCallback()
     }
     if (lastBoundPart != proc.getSelectedPart())
         bindSelectedPart();
-    if (tab == Tab::Player || rollPopped)
+    if (tab == Tab::Player || rollPopped || proc.studioDisplayOn() || proc.daw.isPlaying())
         updatePlayerUi();
     if (rollPopped && rollWindow != nullptr && rollWindow->isMinimised())
         dockPianoRoll();
-    if (tab == Tab::Playlist)
-    {
+    if (tab == Tab::Player)
         updatePlaylistUi();
-        if (proc.playlistIsArmed())
-            updatePlayerUi();
-    }
 }
 
 void ModernEdirolSd80Editor::buttonClicked(juce::Button* b)
@@ -1702,12 +2213,37 @@ void ModernEdirolSd80Editor::buttonClicked(juce::Button* b)
     if (b == &rollDockBtn) { dockPianoRoll(); return; }
     if (b == &tabMixer) { setTab(Tab::Mixer); return; }
     if (b == &tabPlayer) { setTab(Tab::Player); updatePlayerUi(); return; }
-    if (b == &tabPlaylist) { setTab(Tab::Playlist); updatePlaylistUi(); return; }
+    if (b == &tabPlaylist) { setTab(Tab::Player); updatePlaylistUi(); return; }
+    if (b == &tabStudio) { setTab(Tab::Studio); if (studio) studio->refreshChrome(); return; }
+    if (b == &tabPatch) { setTab(Tab::Patch); return; }
     if (b == &tabOptions) { setTab(Tab::Options); return; }
-    if (b == &playlistPlay) { proc.playlistPlay(); updatePlaylistUi(); updatePlayerUi(); return; }
-    if (b == &playlistStop) { proc.playlistStop(); updatePlaylistUi(); updatePlayerUi(); return; }
+    if (b == &keysButton)
+    {
+        releaseComputerKeys();
+        proc.setScreenKeysOn(keysButton.getToggleState());
+        resized();
+        return;
+    }
+    if (b == &playlistPlay) { proc.dawStop(); proc.playlistPlay(); updatePlaylistUi(); updatePlayerUi(); return; }
+    if (b == &playlistStop)
+    {
+        proc.playlistStop();
+        roll.snapDisplayToEngine();
+        updatePlaylistUi();
+        updatePlayerUi();
+        return;
+    }
     if (b == &playlistAddBtn) { addPlaylistFiles(); return; }
-    if (b == &playlistClearBtn) { proc.playlistClear(); updatePlaylistUi(); updatePlayerUi(); return; }
+    if (b == &playlistClearBtn)
+    {
+        proc.playlistClear();
+        proc.player.stop();
+        proc.player.unload();
+        roll.snapDisplayToEngine();
+        updatePlaylistUi();
+        updatePlayerUi();
+        return;
+    }
     if (b == &pullHardwareBtn) { proc.pullFromHardware(); return; }
     if (b == &reverbTypeBtn) { showReverbMenu(); return; }
     if (b == &chorusTypeBtn) { showChorusMenu(); return; }
@@ -1755,6 +2291,9 @@ void ModernEdirolSd80Editor::buttonClicked(juce::Button* b)
                           applySkin();
                           refreshStripLabels();
                           bindSelectedPart();
+                          velCurveBox.setSelectedId(proc.getKeysCurve() + 1, juce::dontSendNotification);
+                          keysVel.setValue(proc.getScreenKeysVel(), juce::dontSendNotification);
+                          keysButton.setToggleState(proc.getScreenKeysOn(), juce::dontSendNotification);
                           rebuildDeviceLists();
                       });
         return;
@@ -1807,8 +2346,8 @@ void ModernEdirolSd80Editor::buttonClicked(juce::Button* b)
     }
     if (b == &drumToggle)
     {
-        bindSelectedPart();
-        proc.enqueuePartPatch(proc.getSelectedPart());
+        if (! patchUiLock)
+            rebuildPatchBrowser();
         return;
     }
     if (b == &porta)
@@ -1868,7 +2407,7 @@ void ModernEdirolSd80Editor::comboBoxChanged(juce::ComboBox* box)
     }
     if (box == &throttleBox)
     {
-        proc.setParamInt("throttle", box->getSelectedId());
+        proc.setParamInt("throttle", box->getSelectedId() <= 1 ? 0 : box->getSelectedId());
         return;
     }
     if (box == &modeBox)
@@ -1878,13 +2417,8 @@ void ModernEdirolSd80Editor::comboBoxChanged(juce::ComboBox* box)
     }
     if (box == &mapBox)
     {
-        const int part = proc.getSelectedPart();
-        proc.setParamInt(ModernEdirolSd80Processor::pid(part, "map"), mapBox.getSelectedId() - 1);
-        const auto sm = static_cast<SoundMap>(mapBox.getSelectedId() - 1);
-        const bool drum = drumToggle.getToggleState();
-        proc.setParamInt(ModernEdirolSd80Processor::pid(part, "msb"),
-                         drum ? drumMsbForMap(sm) : instMsbForMap(sm));
-        rebuildPatchBrowser();
+        if (! patchUiLock)
+            rebuildPatchBrowser();
         return;
     }
     if (box == &mfxSel)
@@ -1910,7 +2444,9 @@ void ModernEdirolSd80Editor::sliderValueChanged(juce::Slider*)
 bool ModernEdirolSd80Editor::isInterestedInFileDrag(const juce::StringArray& files)
 {
     for (int i = 0; i < files.size(); ++i)
-        if (files[i].endsWithIgnoreCase(".mid") || files[i].endsWithIgnoreCase(".midi"))
+        if (files[i].endsWithIgnoreCase(".mid") || files[i].endsWithIgnoreCase(".midi")
+            || files[i].endsWithIgnoreCase(".mesd80song")
+            || (tab == Tab::Patch && files[i].endsWithIgnoreCase(".mesd80patch")))
             return true;
     return false;
 }
@@ -1931,6 +2467,18 @@ void ModernEdirolSd80Editor::filesDropped(const juce::StringArray& files, int, i
 {
     dragging = false;
     if (files.isEmpty()) return;
+    if (tab == Tab::Player && files.size() > 1)
+    {
+        proc.dawStop();
+        for (int i = 0; i < files.size(); ++i)
+            proc.playlistAdd(juce::File(files[i]));
+        updatePlaylistUi();
+        refreshStripLabels();
+        bindSelectedPart();
+        updatePlayerUi();
+        repaint();
+        return;
+    }
     if (tab == Tab::Playlist)
     {
         for (int i = 0; i < files.size(); ++i)
@@ -1945,9 +2493,26 @@ void ModernEdirolSd80Editor::filesDropped(const juce::StringArray& files, int, i
         repaint();
         return;
     }
+    if (tab == Tab::Studio && studio)
+    {
+        studio->loadDropped(juce::File(files[0]));
+        refreshStripLabels();
+        bindSelectedPart();
+        repaint();
+        return;
+    }
+    if (tab == Tab::Patch && patchEd)
+    {
+        const juce::File f(files[0]);
+        if (f.hasFileExtension("mesd80patch"))
+            patchEd->loadDropped(f);
+        repaint();
+        return;
+    }
     const juce::File f(files[0]);
     if (tab == Tab::Player)
     {
+        proc.dawStop();
         proc.disarmPlaylist();
         proc.player.load(f);
         updatePlayerUi();

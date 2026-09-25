@@ -53,3 +53,18 @@ pp=0 type (00–05 Chorus1–4, FB, Flanger).
 Common type: `F0 41 10 00 48 12 10 00 mm 00 tt cs F7` with mm = 06/08/0A for A/B/C.
 
 Part address `pp` = `20H` + partIndex (Part 1 = 20H, Part 32 = 3FH).
+
+## Temporary patch (SD-90 MIDI Implementation, model 00 48, address map)
+
+PATCH SEND writes this, not user flash. Part 1 = `11 00 00 00`. Next part = `+00 20 00 00` (7-bit). Part 32 = `18 60 00 00`.
+
+| Block | Offset from the part |
+|---|---|
+| Common (name 12 bytes, level `0E`, pan `0F`, coarse `11`, fine `12`) | `00 00 00` |
+| TMT (tone switch, key, velocity — 9 bytes × 4 from `+05`) | `00 10 00` |
+| Tone 1 / 2 / 3 / 4 | `00 20 00` / `00 22 00` / `00 24 00` / `00 26 00` |
+
+Tone: level `00`, coarse `01`, fine `02`, pan `04`, dry/cho/rev + output assign `0C`–`11` (0 = MFX). TVF type `48`, cutoff `49`, reso `4D`, env depth `4F` (64 = 0). TVF times+levels `55`–`5D`. TVA times+levels `66`–`6C`. LFO1 wave `6D`.
+
+User inst recall is bank MSB **87**, drum **86**, then PC. That recalls an MFX user slot from the panel Write Patch, not this tone block.
+

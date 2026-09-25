@@ -13,6 +13,17 @@ public:
 
     ~PlaylistSlot() override { stopTimer(); }
 
+    void setCompanion(bool v) { companion = v; }
+    void setEnabledFlag(bool v)
+    {
+        if (enabled == v)
+            return;
+        enabled = v;
+        repaint();
+    }
+
+    std::function<void()> onLoad;
+    std::function<void()> onToggle;
     void attach(MidiPlayerEngine* e) { engine = e; }
     void setPalette(const SkinPalette& p) { pal = &p; repaint(); }
     void setPortLabel(const juce::String& s) { port = s; repaint(); }
@@ -57,7 +68,30 @@ public:
 
         juce::String badge = "EMPTY";
         juce::Colour badgeCol = cMut;
-        if (playing)
+        if (companion)
+        {
+            if (playing && enabled)
+            {
+                badge = "PLAYING";
+                badgeCol = cAcc2;
+            }
+            else if (enabled && loaded)
+            {
+                badge = "ON";
+                badgeCol = cAcc2;
+            }
+            else if (loaded)
+            {
+                badge = "OFF";
+                badgeCol = cMut;
+            }
+            else
+            {
+                badge = "LOAD";
+                badgeCol = cAcc;
+            }
+        }
+        else if (playing)
         {
             badge = "PLAYING";
             badgeCol = cAcc2;
@@ -82,26 +116,29 @@ public:
         auto inner = r.reduced(16.0f, 14.0f);
         auto top = inner.removeFromTop(18.0f);
         g.setColour(cMut);
-        g.setFont(juce::FontOptions(11.0f).withStyle("Bold"));
+        g.setFont(juce::FontOptions(12.0f).withStyle("Bold"));
         g.drawText(port, top.removeFromLeft(top.getWidth() * 0.62f),
                    juce::Justification::centredLeft, false);
 
         auto pill = top.withSizeKeepingCentre(juce::jmin(88.0f, top.getWidth()), 16.0f);
+        pillR = pill;
         g.setColour(badgeCol.withAlpha(0.18f));
         g.fillRoundedRectangle(pill, 8.0f);
         g.setColour(badgeCol);
-        g.setFont(juce::FontOptions(10.0f).withStyle("Bold"));
+        g.setFont(juce::FontOptions(11.0f).withStyle("Bold"));
         g.drawText(badge, pill, juce::Justification::centred, false);
 
         inner.removeFromTop(10.0f);
         g.setColour(loaded ? cText : cMut);
-        g.setFont(juce::FontOptions(16.0f).withStyle("Bold"));
-        const juce::String title = loaded ? name : juce::String("waiting for a file");
+        g.setFont(juce::FontOptions(17.0f).withStyle("Bold"));
+        const juce::String title = loaded ? name
+            : (companion ? juce::String("click to load a second file")
+                         : juce::String("waiting for a file"));
         g.drawText(title, inner.removeFromTop(24.0f), juce::Justification::centredLeft, true);
 
         inner.removeFromTop(6.0f);
         g.setColour(cMut);
-        g.setFont(juce::FontOptions(12.0f));
+        g.setFont(juce::FontOptions(13.0f));
         const juce::String times = loaded
             ? (fmtTime(pos) + "  /  " + fmtTime(len))
             : juce::String("--:--  /  --:--");
@@ -119,6 +156,19 @@ public:
         }
     }
 
+    void mouseDown(const juce::MouseEvent& e) override
+    {
+        if (! companion)
+            return;
+        if (pillR.contains(e.position) && onToggle)
+        {
+            onToggle();
+            return;
+        }
+        if (onLoad)
+            onLoad();
+    }
+
 private:
     static juce::String fmtTime(double sec)
     {
@@ -132,4 +182,7 @@ private:
     const SkinPalette* pal { nullptr };
     juce::String port;
     bool spent { false };
+    bool companion { false };
+    bool enabled { false };
+    mutable juce::Rectangle<float> pillR;
 };

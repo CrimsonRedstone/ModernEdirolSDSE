@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(ModernEdirolSD80 VERSION 1.6.5 LANGUAGES C CXX)
+project(ModernEdirolSD80 VERSION 1.8.12 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,6 +20,7 @@ else()
 endif()
 
 juce_add_plugin(ModernEdirolSD80
+    VERSION ${PROJECT_VERSION}
     COMPANY_NAME "Crimson Redstone"
     BUNDLE_ID com.crimsonredstone.sd80
     IS_SYNTH TRUE
@@ -44,7 +45,8 @@ juce_generate_juce_header(ModernEdirolSD80)
 # bundles already get the juceaide .ico/.icns from ICON_BIG / ICON_SMALL).
 juce_add_binary_data(Mesd80Binary
     SOURCES
-        "${CMAKE_CURRENT_SOURCE_DIR}/Assets/icon.png")
+        "${CMAKE_CURRENT_SOURCE_DIR}/Assets/icon.png"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Assets/Aeterna/aeterna_atlas.png")
 set_target_properties(Mesd80Binary PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_sources(ModernEdirolSD80
@@ -61,9 +63,17 @@ target_sources(ModernEdirolSD80
         Source/MidiPlayer.h
         Source/CassetteDeck.h
         Source/MidiRoll.h
+        Source/AeternaAnimationData.h
+        Source/AeternaCompanion.h
         Source/PlaylistDeck.h
+        Source/DawSong.h
+        Source/DawStudio.h
+        Source/UserPatch.h
+        Source/PatchEditor.h
         Source/Skin.h
-        Source/ParamLock.h)
+        Source/ParamLock.h
+        Source/ScreenKeys.h
+        Source/ScaleTune.h)
 
 target_compile_definitions(ModernEdirolSD80
     PUBLIC

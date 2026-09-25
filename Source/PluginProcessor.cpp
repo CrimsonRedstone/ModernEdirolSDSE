@@ -5,6 +5,55 @@
 
 using namespace sd80;
 
+static juce::String scaleTuneToCsv(const std::uint8_t tune[32][12])
+{
+    juce::String scale;
+    for (int p = 0; p < 32; ++p)
+        for (int n = 0; n < 12; ++n)
+        {
+            if (scale.isNotEmpty())
+                scale << ",";
+            scale << (int) tune[p][n];
+        }
+    return scale;
+}
+
+static void scaleTuneFromCsv(std::uint8_t tune[32][12], const juce::String& csv)
+{
+    if (csv.isEmpty())
+        return;
+    const auto scale = juce::StringArray::fromTokens(csv, ",", "");
+    int k = 0;
+    for (int p = 0; p < 32 && k < scale.size(); ++p)
+        for (int n = 0; n < 12 && k < scale.size(); ++n, ++k)
+            tune[p][n] = (std::uint8_t) juce::jlimit(0, 127, scale[k].getIntValue());
+}
+
+static void writeKeysXml(juce::XmlElement& xml, bool keysOn, int keysVel, int keysOct, int keysCurve,
+                          const std::uint8_t tune[32][12])
+{
+    xml.setAttribute("keysOn", keysOn ? 1 : 0);
+    xml.setAttribute("keysVel", keysVel);
+    xml.setAttribute("keysOct", keysOct);
+    xml.setAttribute("keysCurve", keysCurve);
+    xml.setAttribute("scaleTune", scaleTuneToCsv(tune));
+}
+
+static void readKeysXml(const juce::XmlElement& xml, bool& keysOn, int& keysVel, int& keysOct, int& keysCurve,
+                         std::uint8_t tune[32][12])
+{
+    if (xml.hasAttribute("keysOn"))
+        keysOn = xml.getBoolAttribute("keysOn", keysOn);
+    if (xml.hasAttribute("keysVel"))
+        keysVel = juce::jlimit(1, 127, xml.getIntAttribute("keysVel", keysVel));
+    if (xml.hasAttribute("keysOct"))
+        keysOct = juce::jlimit(0, 8, xml.getIntAttribute("keysOct", keysOct));
+    if (xml.hasAttribute("keysCurve"))
+        keysCurve = juce::jlimit(0, 3, xml.getIntAttribute("keysCurve", keysCurve));
+    if (xml.hasAttribute("scaleTune"))
+        scaleTuneFromCsv(tune, xml.getStringAttribute("scaleTune"));
+}
+
 juce::String ModernEdirolSd80Processor::pid(int part, const char* key)
 {
     return "p" + juce::String(part).paddedLeft('0', 2) + "_" + key;
@@ -26,7 +75,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout ModernEdirolSd80Processor::c
     };
 
     addInt("mode", "Generator Mode", 0, 3, 0); // Native
-    addInt("throttle", "USB Throttle ms", 20, 50, 30);
+    addInt("throttle", "USB Throttle ms", 0, 50, 0);
     addInt("reverbType", "Reverb Type", 0, 8, 4);
     addInt("reverbTime", "Reverb Time", 0, 127, 64);
     addInt("chorusType", "Chorus Type", 0, 5, 2);
@@ -100,6 +149,9 @@ ModernEdirolSd80Processor::ModernEdirolSd80Processor()
     opt.osxLibrarySubFolder = "Application Support";
     opt.folderName = "CrimsonRedstone";
     appProps.setStorageParameters(opt);
+    for (int p = 0; p < 32; ++p)
+        for (int n = 0; n < 12; ++n)
+            scaleTune[p][n] = 64;
     restoreAppSettings();
     playlistA.setOutputPort(MidiPort::A);
     playlistB.setOutputPort(MidiPort::B);
@@ -153,7 +205,7 @@ void ModernEdirolSd80Processor::prepareToPlay(double sampleRate, int)
 {
     currentSampleRate = sampleRate > 0 ? sampleRate : 44100.0;
     throttle.resetTiming();
-    throttle.setDelayMs(paramInt("throttle", 30));
+    throttle.setDelayMs(paramInt("throttle", 0));
 }
 
 void ModernEdirolSd80Processor::releaseResources() {}
@@ -315,29 +367,10 @@ void ModernEdirolSd80Processor::refillPlaylistQueueUnlocked()
 
 void ModernEdirolSd80Processor::applyPlaylistLoopToEngines()
 {
-    const bool song = playlistLoopMode.load() == 2;
-    if (! song)
-    {
-        playlistA.setLooping(false);
-        playlistB.setLooping(false);
-        return;
-    }
-    if (playlistA.isPlaying())
-    {
-        playlistA.setLooping(true);
-        playlistB.setLooping(false);
-    }
-    else if (playlistB.isPlaying())
-    {
-        playlistB.setLooping(true);
-        playlistA.setLooping(false);
-    }
-    else
-    {
-        const bool a = playlistA.isLoaded() && ! playlistSpentA.load();
-        playlistA.setLooping(a);
-        playlistB.setLooping(! a && playlistB.isLoaded() && ! playlistSpentB.load());
-    }
+    const int mode = playlistLoopMode.load();
+    playlistA.setLooping(mode == 2 && playlistA.isLoaded() && ! playlistSpentA.load());
+    const bool bLoop = partBOn.load() && playlistB.isLoaded() && mode != 0;
+    playlistB.setLooping(bLoop);
 }
 
 void ModernEdirolSd80Processor::playlistArm(int side)
@@ -404,12 +437,63 @@ void ModernEdirolSd80Processor::playlistAdd(const juce::File& f)
     player.stop();
     if (! playlistA.isLoaded())
         playlistArm(0);
-    if (! playlistB.isLoaded())
-        playlistArm(1);
+}
+
+void ModernEdirolSd80Processor::loadPartB(const juce::File& f)
+{
+    if (! (f.hasFileExtension(".mid") || f.hasFileExtension(".midi")))
+        return;
+    if (! f.existsAsFile())
+        return;
+    applyMidiFile(f, 1);
+    playlistB.setOutputPort(MidiPort::B);
+    playlistB.load(f);
+    playlistSpentB.store(false);
+    applyPlaylistLoopToEngines();
+    if (partBOn.load() && (playlistA.isPlaying() || player.isPlaying()))
+        playlistB.play();
+}
+
+void ModernEdirolSd80Processor::setPartBEnabled(bool on)
+{
+    partBOn.store(on);
+    if (! on)
+    {
+        if (playlistB.isPlaying())
+            playlistB.stop();
+        return;
+    }
+    applyPlaylistLoopToEngines();
+    if (playlistB.isLoaded() && (playlistA.isPlaying() || player.isPlaying()))
+    {
+        playlistSpentB.store(false);
+        playlistB.play();
+    }
+}
+
+void ModernEdirolSd80Processor::partBFollow(int cmd)
+{
+    if (cmd == 0 || ! partBOn.load() || ! playlistB.isLoaded())
+    {
+        if (cmd == 0 && playlistB.isPlaying())
+            playlistB.stop();
+        return;
+    }
+    if (cmd == 2)
+    {
+        if (playlistB.isPlaying())
+            playlistB.pause();
+        return;
+    }
+    playlistB.setOutputPort(MidiPort::B);
+    playlistSpentB.store(false);
+    applyPlaylistLoopToEngines();
+    playlistB.play();
 }
 
 void ModernEdirolSd80Processor::playlistPlay()
 {
+    daw.stop();
     player.stop();
     playlistOwnsTransport.store(true);
 
@@ -418,7 +502,7 @@ void ModernEdirolSd80Processor::playlistPlay()
         const bool aMid = playlistA.isLoaded() && ! playlistSpentA.load()
             && playlistA.getPosition() > 0.05
             && playlistA.getPosition() + 0.08 < playlistA.getLength();
-        const bool bMid = playlistB.isLoaded() && ! playlistSpentB.load()
+        const bool bMid = partBOn.load() && playlistB.isLoaded() && ! playlistSpentB.load()
             && playlistB.getPosition() > 0.05
             && playlistB.getPosition() + 0.08 < playlistB.getLength();
         if (aMid || bMid)
@@ -428,25 +512,23 @@ void ModernEdirolSd80Processor::playlistPlay()
             applyPlaylistLoopToEngines();
             if (aMid)
                 playlistA.play();
-            else
+            if (bMid)
                 playlistB.play();
             return;
         }
         playlistPaused.store(false);
     }
 
-    if (! playlistA.isLoaded() && ! playlistB.isLoaded())
+    if (! playlistA.isLoaded())
     {
         {
             const juce::ScopedLock sl(playlistLock);
             refillPlaylistQueueUnlocked();
         }
         playlistArm(0);
-        playlistArm(1);
     }
     playlistA.stop();
-    playlistB.stop();
-    if (! playlistA.isLoaded() && ! playlistB.isLoaded())
+    if (! playlistA.isLoaded() && ! (partBOn.load() && playlistB.isLoaded()))
         return;
     playlistActive.store(true);
     playlistPaused.store(false);
@@ -456,16 +538,14 @@ void ModernEdirolSd80Processor::playlistPlay()
         playlistSpentA.store(false);
         playlistA.play();
     }
-    else
-    {
-        playlistSpentB.store(false);
-        playlistB.play();
-    }
+    if (partBOn.load() && playlistB.isLoaded())
+        playlistB.stop();
+    partBFollow(1);
 }
 
 void ModernEdirolSd80Processor::playlistPause()
 {
-    if (! playlistA.isPlaying() && ! playlistB.isPlaying())
+    if (! playlistA.isPlaying() && ! playlistB.isPlaying() && ! player.isPlaying())
         return;
     playlistActive.store(false);
     playlistPaused.store(true);
@@ -479,6 +559,7 @@ void ModernEdirolSd80Processor::playlistStop()
 {
     playlistActive.store(false);
     playlistPaused.store(false);
+    playlistHeard.store(false);
     playlistA.stop();
     playlistB.stop();
 }
@@ -487,6 +568,177 @@ void ModernEdirolSd80Processor::disarmPlaylist()
 {
     playlistStop();
     playlistOwnsTransport.store(false);
+    playlistHeard.store(false);
+}
+
+void ModernEdirolSd80Processor::dawPlay()
+{
+    player.stop();
+    playlistStop();
+    const auto song = daw.copySong();
+    if (daw.isSongMode())
+    {
+        for (int p = 0; p < 32; ++p)
+            if (! song.tracks[p].clips.empty())
+            {
+                enqueuePartPatch(p);
+                enqueuePartMix(p);
+                enqueuePartDeep(p);
+            }
+    }
+    const int t = daw.getEditTrack();
+    enqueuePartPatch(t);
+    enqueuePartMix(t);
+    enqueuePartDeep(t);
+    sendMasterVolume();
+    studioHold = true;
+    daw.play();
+    syncStudioDisplay();
+}
+
+void ModernEdirolSd80Processor::dawPause()
+{
+    studioHold = true;
+    daw.pause();
+    syncStudioDisplay();
+}
+
+void ModernEdirolSd80Processor::dawStop()
+{
+    studioHold = false;
+    daw.stop();
+    syncStudioDisplay();
+}
+
+void ModernEdirolSd80Processor::dawPreview(int part, int pitch, bool on, int velocity)
+{
+    part = juce::jlimit(0, 31, part);
+    pitch = juce::jlimit(0, 127, pitch);
+    const int ch = channelForPart(part);
+    const MidiPort port = portForPart(part);
+    if (on)
+        throttle.push(juce::MidiMessage::noteOn(ch, pitch, (juce::uint8) shapedVelocity(velocity)), port);
+    else
+        throttle.push(juce::MidiMessage::noteOff(ch, pitch), port);
+    daw.recordLive(part, on, pitch, on ? shapedVelocity(velocity) : 0);
+}
+
+int ModernEdirolSd80Processor::shapedVelocity(int velocity) const
+{
+    const int v = juce::jlimit(1, 127, velocity);
+    if (keysCurve == 3)
+        return juce::jlimit(1, 127, screenKeysVel);
+    if (keysCurve == 1)
+    {
+        const float u = (float) v / 127.0f;
+        return juce::jlimit(1, 127, (int) std::lround(u * u * 127.0));
+    }
+    if (keysCurve == 2)
+    {
+        const float u = (float) v / 127.0f;
+        return juce::jlimit(1, 127, (int) std::lround(std::sqrt(u) * 127.0));
+    }
+    return v;
+}
+
+void ModernEdirolSd80Processor::setKeysCurve(int v)
+{
+    v = juce::jlimit(0, 3, v);
+    if (v == keysCurve)
+        return;
+    keysCurve = v;
+    persistAppSettings();
+}
+
+int ModernEdirolSd80Processor::getScaleTune(int part, int semitone) const
+{
+    part = juce::jlimit(0, 31, part);
+    semitone = juce::jlimit(0, 11, semitone);
+    return scaleTune[part][semitone];
+}
+
+void ModernEdirolSd80Processor::setScaleTune(int part, int semitone, int cents64)
+{
+    part = juce::jlimit(0, 31, part);
+    semitone = juce::jlimit(0, 11, semitone);
+    scaleTune[part][semitone] = (std::uint8_t) juce::jlimit(0, 127, cents64);
+    throttle.push(sd80::gm2ScaleOctave(channelForPart(part), scaleTune[part]), portForPart(part));
+    persistAppSettings();
+}
+
+void ModernEdirolSd80Processor::resetScaleTune(int part)
+{
+    part = juce::jlimit(0, 31, part);
+    for (int n = 0; n < 12; ++n)
+        scaleTune[part][n] = 64;
+    throttle.push(sd80::gm2ScaleOctave(channelForPart(part), scaleTune[part]), portForPart(part));
+    persistAppSettings();
+}
+
+void ModernEdirolSd80Processor::setScreenKeysOn(bool v)
+{
+    screenKeysOn = v;
+    persistAppSettings();
+}
+
+void ModernEdirolSd80Processor::setScreenKeysVel(int v)
+{
+    v = juce::jlimit(1, 127, v);
+    if (v == screenKeysVel)
+        return;
+    screenKeysVel = v;
+    persistAppSettings();
+}
+
+void ModernEdirolSd80Processor::setScreenKeysOct(int v)
+{
+    screenKeysOct = juce::jlimit(0, 8, v);
+    persistAppSettings();
+}
+
+bool ModernEdirolSd80Processor::dawSaveSong(const juce::File& file)
+{
+    auto xml = daw.toXml();
+    if (! xml)
+        return false;
+    if (file.replaceWithText(xml->toString()))
+    {
+        persistAppSettings();
+        return true;
+    }
+    return false;
+}
+
+bool ModernEdirolSd80Processor::dawLoadSong(const juce::File& file)
+{
+    auto xml = juce::XmlDocument::parse(file);
+    if (xml == nullptr || ! daw.fromXml(*xml))
+        return false;
+    persistAppSettings();
+    return true;
+}
+
+bool ModernEdirolSd80Processor::dawImportMidi(const juce::File& file, int track)
+{
+    if (! daw.importMidi(file, track))
+        return false;
+    applyMidiFile(file); // mixer patches + CCs, then SYNC
+    persistAppSettings();
+    return true;
+}
+
+bool ModernEdirolSd80Processor::dawExportMidi(const juce::File& fileA)
+{
+    auto fileB = fileA.getSiblingFile(fileA.getFileNameWithoutExtension() + "-B.mid");
+    return daw.exportMidi(fileA, fileB, [this](int part, juce::MidiMessageSequence& seq)
+    {
+        const int ch = channelForPart(part);
+        seq.addEvent(juce::MidiMessage::controllerEvent(ch, 0, paramInt(pid(part, "msb"))), 0);
+        seq.addEvent(juce::MidiMessage::controllerEvent(ch, 32, paramInt(pid(part, "lsb"))), 0);
+        seq.addEvent(juce::MidiMessage::programChange(ch, paramInt(pid(part, "pc"))), 0);
+        seq.addEvent(juce::MidiMessage::controllerEvent(ch, 7, paramInt(pid(part, "vol"), 100)), 0);
+        seq.addEvent(juce::MidiMessage::controllerEvent(ch, 10, paramInt(pid(part, "pan"), 64)), 0);
+    });
 }
 
 void ModernEdirolSd80Processor::playlistClear()
@@ -503,6 +755,7 @@ void ModernEdirolSd80Processor::playlistClear()
     playlistB.unload();
     playlistSpentA.store(true);
     playlistSpentB.store(true);
+    partBOn.store(false);
     applyPlaylistLoopToEngines();
 }
 
@@ -519,34 +772,21 @@ void ModernEdirolSd80Processor::playlistService()
         playlistArm(0);
         playlistNeedArm.fetch_and(~1);
     }
-    if (! playlistB.isLoaded())
-    {
-        playlistArm(1);
-        playlistNeedArm.fetch_and(~2);
-    }
 
     const int need = playlistNeedArm.exchange(0);
     if ((need & 1) != 0)
         playlistArm(0);
-    if ((need & 2) != 0)
-        playlistArm(1);
 
     if (playlistNeedPlay.exchange(false) && playlistOwnsTransport.load())
     {
-        if (! playlistA.isPlaying() && ! playlistB.isPlaying())
+        if (! playlistA.isPlaying() && playlistA.isLoaded() && ! playlistSpentA.load())
         {
             applyPlaylistLoopToEngines();
-            if (playlistA.isLoaded() && ! playlistSpentA.load())
-            {
-                playlistActive.store(true);
-                playlistA.play();
-            }
-            else if (playlistB.isLoaded() && ! playlistSpentB.load())
-            {
-                playlistActive.store(true);
-                playlistB.play();
-            }
+            playlistActive.store(true);
+            playlistA.play();
         }
+        else if (! playlistA.isLoaded() && ! playlistB.isPlaying())
+            playlistActive.store(false);
     }
 }
 
@@ -571,27 +811,236 @@ int ModernEdirolSd80Processor::cyclePlaylistLoop()
 
 MidiPlayerEngine& ModernEdirolSd80Processor::displayEngine()
 {
+    if (studioFollowing)
+        return studioView;
     if (playlistOwnsTransport.load())
     {
-        if (playlistB.isPlaying())
-            return playlistB;
-        if (playlistA.isPlaying())
-            return playlistA;
-        if (playlistA.isLoaded() && ! playlistSpentA.load())
-            return playlistA;
-        if (playlistB.isLoaded() && ! playlistSpentB.load())
-            return playlistB;
-        if (playlistB.isLoaded())
-            return playlistB;
         if (playlistA.isLoaded())
             return playlistA;
+        if (partBOn.load() && playlistB.isLoaded())
+            return playlistB;
     }
     return player;
 }
 
 int ModernEdirolSd80Processor::displayPartGroup()
 {
+    if (studioFollowing)
+        return studioSide;
     return (&displayEngine() == &playlistB) ? 1 : 0;
+}
+
+void ModernEdirolSd80Processor::applyListedPatch(int part, int map, bool drum, int msb, int lsb, int pc)
+{
+    part = juce::jlimit(0, 31, part);
+    const bool was = suppressOutgoing.load();
+    suppressOutgoing = true;
+    setParamInt(pid(part, "map"), juce::jlimit(0, 8, map));
+    setParamInt(pid(part, "drum"), drum ? 1 : 0);
+    setParamInt(pid(part, "msb"), juce::jlimit(0, 127, msb));
+    setParamInt(pid(part, "lsb"), juce::jlimit(0, 127, lsb));
+    setParamInt(pid(part, "pc"), juce::jlimit(0, 127, pc));
+    suppressOutgoing = was;
+    enqueuePartPatch(part);
+}
+
+void ModernEdirolSd80Processor::syncStudioDisplay()
+{
+    const bool playing = daw.isPlaying();
+    const double posTick = daw.getPosTick();
+    if (! playing && ! studioHold && posTick < 1.0)
+    {
+        if (studioFollowing)
+        {
+            studioFollowing = false;
+            studioView.unload();
+            studioSeenGen = -1;
+            studioSeenMode = -1;
+            studioSeenEdit = -1;
+            studioSeenPat = -1;
+            studioSeenBpm = -1;
+            studioSeenSec = -1.0;
+        }
+        return;
+    }
+    if (! playing && ! studioFollowing)
+        return;
+
+    const double bpm = juce::jmax(1.0, daw.getBpm());
+    const double secPerTick = 60.0 / (bpm * (double) kDawPpq);
+    const double posSec = juce::jmax(0.0, posTick * secPerTick);
+
+    // Pause keeps the notes and the keys that were already on screen.
+    if (! playing && studioFollowing)
+    {
+        studioView.setDisplayClock(posSec, false);
+        return;
+    }
+
+    const int gen = daw.getGen();
+    const int mode = daw.isSongMode() ? 1 : 0;
+    const int edit = daw.getEditTrack();
+    const int pat = daw.getPatternIndex();
+    const int bpm10 = (int) std::llround(bpm * 10.0);
+    const bool windowMoved = std::abs(posSec - studioSeenSec) > 2.0;
+    const bool rebuild = ! studioFollowing
+                      || gen != studioSeenGen
+                      || mode != studioSeenMode
+                      || edit != studioSeenEdit
+                      || pat != studioSeenPat
+                      || bpm10 != studioSeenBpm
+                      || windowMoved;
+
+    studioFollowing = true;
+    if (! rebuild)
+    {
+        studioView.setDisplayClock(posSec, playing);
+        return;
+    }
+
+    studioSeenGen = gen;
+    studioSeenMode = mode;
+    studioSeenEdit = edit;
+    studioSeenPat = pat;
+    studioSeenBpm = bpm10;
+    studioSeenSec = posSec;
+
+    const auto song = daw.copySong();
+
+    auto sideHasNotes = [&song](int side) -> bool
+    {
+        const int a = side * 16;
+        for (int p = a; p < a + 16; ++p)
+        {
+            for (const auto& c : song.tracks[p].clips)
+            {
+                if (c.pattern < 0 || c.pattern >= (int) song.patterns.size())
+                    continue;
+                if (! song.patterns[(size_t) c.pattern].notes.empty())
+                    return true;
+            }
+        }
+        return false;
+    };
+
+    if (mode == 0)
+        studioSide = edit < 16 ? 0 : 1;
+    else
+    {
+        const int prefer = edit < 16 ? 0 : 1;
+        if (! sideHasNotes(prefer) && sideHasNotes(1 - prefer))
+            studioSide = 1 - prefer;
+        else
+            studioSide = prefer;
+    }
+
+    const int tick0 = (int) std::floor((posSec - 0.6) / secPerTick);
+    const int tick1 = (int) std::ceil((posSec + 10.0) / secPerTick);
+    std::vector<PlayerNote> notes;
+    notes.reserve(512);
+    int lo = 127;
+    int hi = 0;
+    std::uint32_t mask = 0;
+    auto pushNote = [&](int tickOn, int tickOff, int pitch, int channel, int vel)
+    {
+        if (tickOff < tick0 || tickOn > tick1)
+            return;
+        if ((int) notes.size() >= 8000)
+            return;
+        pitch = juce::jlimit(0, 127, pitch);
+        channel = juce::jlimit(1, 16, channel);
+        PlayerNote pn;
+        pn.startSec = (double) tickOn * secPerTick;
+        pn.endSec = (double) juce::jmax(tickOn + 1, tickOff) * secPerTick;
+        if (pn.endSec < pn.startSec + 0.02)
+            pn.endSec = pn.startSec + 0.02;
+        pn.note = pitch;
+        pn.channel = channel;
+        pn.velocity = juce::jlimit(1, 127, vel);
+        notes.push_back(pn);
+        lo = juce::jmin(lo, pitch);
+        hi = juce::jmax(hi, pitch);
+        mask |= (1u << (channel - 1));
+    };
+
+    if (mode == 0)
+    {
+        if (pat >= 0 && pat < (int) song.patterns.size())
+        {
+            const auto& pattern = song.patterns[(size_t) pat];
+            const int ch = (edit % 16) + 1;
+            const int plen = juce::jmax(1, pattern.length);
+            for (const auto& n : pattern.notes)
+            {
+                if (n.start < 0 || n.start >= plen)
+                    continue;
+                pushNote(n.start, n.start + juce::jmax(1, n.dur), n.pitch, ch, n.vel);
+            }
+        }
+    }
+    else
+    {
+        const int a = studioSide * 16;
+        for (int p = a; p < a + 16; ++p)
+        {
+            const int ch = (p % 16) + 1;
+            for (const auto& c : song.tracks[p].clips)
+            {
+                if (c.pattern < 0 || c.pattern >= (int) song.patterns.size())
+                    continue;
+                const auto& pattern = song.patterns[(size_t) c.pattern];
+                const int plen = juce::jmax(1, pattern.length);
+                const int span = DawEngine::clipSpan(c, pattern);
+                const int clipEnd = c.start + juce::jmax(1, span);
+                for (const auto& n : pattern.notes)
+                {
+                    if (n.start < 0 || n.start >= plen)
+                        continue;
+                    for (int loop = 0; loop * plen < span; ++loop)
+                    {
+                        const int on = c.start + loop * plen + n.start;
+                        if (on >= clipEnd)
+                            break;
+                        pushNote(on, juce::jmin(on + juce::jmax(1, n.dur), clipEnd), n.pitch, ch, n.vel);
+                        if ((int) notes.size() >= 8000)
+                            break;
+                    }
+                    if ((int) notes.size() >= 8000)
+                        break;
+                }
+            }
+        }
+    }
+
+    if (notes.empty())
+    {
+        lo = 36;
+        hi = 84;
+    }
+
+    int endTick = song.loopEnd;
+    for (int t = 0; t < kDawTracks; ++t)
+    {
+        for (const auto& c : song.tracks[t].clips)
+        {
+            int len = kDawBar;
+            if (c.pattern >= 0 && c.pattern < (int) song.patterns.size())
+                len = DawEngine::clipSpan(c, song.patterns[(size_t) c.pattern]);
+            endTick = juce::jmax(endTick, c.start + len);
+        }
+    }
+    if (mode == 0 && pat >= 0 && pat < (int) song.patterns.size())
+        endTick = juce::jmax(endTick, song.patterns[(size_t) pat].length);
+    endTick = juce::jmax(kDawBar, endTick);
+
+    juce::String title("STUDIO");
+    if (mode == 0 && pat >= 0 && pat < (int) song.patterns.size())
+        title << "  " << song.patterns[(size_t) pat].name;
+    else if (song.title.isNotEmpty())
+        title << "  " << song.title;
+
+    studioView.setDisplayScore(notes, (double) endTick * secPerTick, title, lo, hi, mask);
+    studioView.setDisplayClock(posTick * secPerTick, playing);
 }
 
 bool ModernEdirolSd80Processor::playlistSlotLoaded(int side) const
@@ -634,18 +1083,20 @@ juce::String ModernEdirolSd80Processor::playlistStatus() const
 
     if (playlistActive.load())
     {
-        if (playlistA.isPlaying())
-            return "Part A playing  -  Part B is next (or loading)" + loop;
-        if (playlistB.isPlaying())
-            return "Part B playing  -  next file loads onto Part A" + loop;
-        return "Playlist running" + loop;
+        juce::String s = playlistA.isPlaying() ? "Part A playing" : "Playlist";
+        if (partBOn.load() && playlistB.isPlaying())
+            s << "  +  Part B";
+        else if (partBOn.load() && playlistB.isLoaded())
+            s << "  |  Part B on";
+        return s + loop;
     }
     if (playlistPaused.load())
-        return "Paused" + loop;
-    if (playlistA.isLoaded() || playlistB.isLoaded() || playlistQueue.size() > 0
-        || playlistLibrary.size() > 0)
-        return "Armed. Press PLAY to start Part A." + loop;
-    return "Drop .mid files. First two arm Part A then Part B.";
+        return juce::String("Paused") + loop;
+    if (playlistA.isLoaded() || playlistQueue.size() > 0 || playlistLibrary.size() > 0)
+        return juce::String("Armed. PLAY starts Part A. Part B is a second file.") + loop;
+    if (partBOn.load() && playlistB.isLoaded())
+        return juce::String("Part B is on. Add files to arm Part A.") + loop;
+    return "Drop .mid files to arm Part A. Part B plays a second file with it.";
 }
 
 void ModernEdirolSd80Processor::pullFromHardware()
@@ -695,6 +1146,10 @@ void ModernEdirolSd80Processor::factoryResetHardware()
     lockedIds.clear();
     skipFxWarn = false;
     skinIndex = 0;
+    keysCurve = 0;
+    for (int p = 0; p < 32; ++p)
+        for (int n = 0; n < 12; ++n)
+            scaleTune[p][n] = 64;
     selectedPart.store(0);
     visibleGroup.store(0);
     selectedMask.store(1u);
@@ -721,6 +1176,7 @@ void ModernEdirolSd80Processor::silenceForQuit()
 {
     player.stop();
     playlistStop();
+    daw.stop();
 
     const juce::ScopedLock sl(deviceLock);
     juce::MidiOutput* ports[2] = { midiOutA.get(), midiOutB.get() };
@@ -764,6 +1220,96 @@ juce::StringArray ModernEdirolSd80Processor::getLockedIds() const
     return lockedIds;
 }
 
+void ModernEdirolSd80Processor::loadUserLibraryXml(const juce::XmlElement& lib)
+{
+    userSlot = juce::jlimit(0, kUserPatchSlots - 1, lib.getIntAttribute("slot", userSlot));
+    for (int i = 0; i < kUserPatchSlots; ++i)
+        userSlots[(size_t) i] = {};
+    for (auto* c = lib.getFirstChildElement(); c != nullptr; c = c->getNextElement())
+    {
+        if (! c->hasTagName("mesd80patch"))
+            continue;
+        const int i = c->getIntAttribute("slot", -1);
+        if (i < 0 || i >= kUserPatchSlots)
+            continue;
+        userSlots[(size_t) i].used = true;
+        userSlots[(size_t) i].patch = readPatchXml(*c);
+    }
+}
+
+void ModernEdirolSd80Processor::setUserPatch(const UserPatch& p, bool persist)
+{
+    userPatch = p;
+    if (persist)
+        persistAppSettings();
+}
+
+void ModernEdirolSd80Processor::sendUserPatch(PatchPush what, int tone, bool withBase)
+{
+    const auto msgs = userPatchMessages(userPatch, what, tone, withBase);
+    const auto port = portForPart(juce::jlimit(0, 31, userPatch.part));
+    for (const auto& m : msgs)
+        throttle.push(m, port);
+}
+
+bool ModernEdirolSd80Processor::saveUserPatchFile(const juce::File& file)
+{
+    juce::XmlElement xml("mesd80patch");
+    writePatchXml(xml, userPatch);
+    return xml.writeTo(file);
+}
+
+bool ModernEdirolSd80Processor::loadUserPatchFile(const juce::File& file)
+{
+    auto xml = juce::XmlDocument::parse(file);
+    if (xml == nullptr || ! xml->hasTagName("mesd80patch"))
+        return false;
+    userPatch = readPatchXml(*xml);
+    persistAppSettings();
+    return true;
+}
+
+bool ModernEdirolSd80Processor::exportUserPatchSyx(const juce::File& file)
+{
+    UserPatch copy = userPatch;
+    if (copy.target == (int) PatchTarget::SD20)
+        copy.target = (int) PatchTarget::SD80;
+    const auto msgs = userPatchMessages(copy, PatchPush::All, 0, true);
+    juce::MemoryOutputStream out;
+    for (const auto& m : msgs)
+        if (m.isSysEx())
+            out.write(m.getRawData(), (size_t) m.getRawDataSize());
+    if (out.getDataSize() == 0)
+        return false;
+    return file.replaceWithData(out.getData(), out.getDataSize());
+}
+
+void ModernEdirolSd80Processor::storeUserSlot(int index)
+{
+    index = juce::jlimit(0, kUserPatchSlots - 1, index);
+    userSlot = index;
+    userSlots[(size_t) index].used = true;
+    userSlots[(size_t) index].patch = userPatch;
+    persistAppSettings();
+}
+
+void ModernEdirolSd80Processor::recallUserSlot(int index)
+{
+    index = juce::jlimit(0, kUserPatchSlots - 1, index);
+    userSlot = index;
+    if (! userSlots[(size_t) index].used)
+        return;
+    userPatch = userSlots[(size_t) index].patch;
+    persistAppSettings();
+}
+
+bool ModernEdirolSd80Processor::userSlotUsed(int index) const
+{
+    if (index < 0 || index >= kUserPatchSlots)
+        return false;
+    return userSlots[(size_t) index].used;
+}
+
 void ModernEdirolSd80Processor::setSkinIndex(int i)
 {
     i = juce::jlimit(0, kNumSkins - 1, i);
@@ -774,16 +1320,50 @@ void ModernEdirolSd80Processor::setSkinIndex(int i)
         juce::MessageManager::callAsync([this] { if (onSkinChanged) onSkinChanged(); });
 }
 
+void ModernEdirolSd80Processor::setAeternaMode(int mode)
+{
+    mode = juce::jlimit(0, 1, mode);
+    const bool changed = (mode != aeternaMode);
+    aeternaMode = mode;
+    persistAppSettings();
+    if (changed && onAeternaChanged)
+        juce::MessageManager::callAsync([this] { if (onAeternaChanged) onAeternaChanged(); });
+}
+
 void ModernEdirolSd80Processor::persistAppSettings()
 {
     if (auto* f = appProps.getUserSettings())
     {
         f->setValue("skin", skinIndex);
+        f->setValue("aeterna", aeternaMode);
+        f->setValue("keysOn", screenKeysOn);
+        f->setValue("keysVel", screenKeysVel);
+        f->setValue("keysOct", screenKeysOct);
+        f->setValue("keysCurve", keysCurve);
+        f->setValue("scaleTune", scaleTuneToCsv(scaleTune));
         f->setValue("locks", lockedIds.joinIntoString(","));
         f->setValue("skipFxWarn", skipFxWarn);
         f->setValue("routeAsPlayed", true);
         if (auto xml = apvts.copyState().createXml())
             f->setValue("sessionXml", xml->toString());
+        if (auto d = daw.toXml())
+            f->setValue("dawXml", d->toString());
+        {
+            juce::XmlElement patchXml("mesd80patch");
+            writePatchXml(patchXml, userPatch);
+            f->setValue("userPatchXml", patchXml.toString());
+            juce::XmlElement lib("mesd80lib");
+            lib.setAttribute("slot", userSlot);
+            for (int i = 0; i < kUserPatchSlots; ++i)
+            {
+                if (! userSlots[(size_t) i].used)
+                    continue;
+                auto* c = lib.createNewChildElement("mesd80patch");
+                c->setAttribute("slot", i);
+                writePatchXml(*c, userSlots[(size_t) i].patch);
+            }
+            f->setValue("userLibXml", lib.toString());
+        }
         f->saveIfNeeded();
     }
 }
@@ -793,6 +1373,12 @@ void ModernEdirolSd80Processor::restoreAppSettings()
     if (auto* f = appProps.getUserSettings())
     {
         skinIndex = juce::jlimit(0, kNumSkins - 1, f->getIntValue("skin", 0));
+        aeternaMode = juce::jlimit(0, 1, f->getIntValue("aeterna", 1));
+        screenKeysOn = f->getBoolValue("keysOn", false);
+        screenKeysVel = juce::jlimit(1, 127, f->getIntValue("keysVel", 100));
+        screenKeysOct = juce::jlimit(0, 8, f->getIntValue("keysOct", 4));
+        keysCurve = juce::jlimit(0, 3, f->getIntValue("keysCurve", 0));
+        scaleTuneFromCsv(scaleTune, f->getValue("scaleTune"));
         lockedIds = juce::StringArray::fromTokens(f->getValue("locks"), ",", "");
         lockedIds.trim();
         lockedIds.removeEmptyStrings();
@@ -822,6 +1408,27 @@ void ModernEdirolSd80Processor::restoreAppSettings()
                 f->setValue("sessionXml", xml->toString());
             f->saveIfNeeded();
         }
+        // v1.6.6: USB throttle defaults to off. Old sessions stored 30 ms.
+        if (! f->getBoolValue("throttleOffDefault", false))
+        {
+            setParamInt("throttle", 0);
+            f->setValue("throttleOffDefault", true);
+            if (auto xml = apvts.copyState().createXml())
+                f->setValue("sessionXml", xml->toString());
+            f->saveIfNeeded();
+        }
+        const auto dawS = f->getValue("dawXml");
+        if (dawS.isNotEmpty())
+            daw.fromXmlString(dawS);
+        const auto patchS = f->getValue("userPatchXml");
+        if (patchS.isNotEmpty())
+            if (auto xml = juce::XmlDocument::parse(patchS))
+                if (xml->hasTagName("mesd80patch"))
+                    userPatch = readPatchXml(*xml);
+        const auto libS = f->getValue("userLibXml");
+        if (libS.isNotEmpty())
+            if (auto lib = juce::XmlDocument::parse(libS))
+                loadUserLibraryXml(*lib);
     }
 }
 
@@ -959,7 +1566,7 @@ void ModernEdirolSd80Processor::enqueueMfxBlock()
 
 void ModernEdirolSd80Processor::syncHardwarePush()
 {
-    throttle.setDelayMs(paramInt("throttle", 30));
+    throttle.setDelayMs(paramInt("throttle", 0));
     throttle.push(modeMessage(getGeneratorMode()), MidiPort::Both);
 
     throttle.push(gm2ReverbParam(0, (std::uint8_t) paramInt("reverbType", 4)), MidiPort::A);
@@ -978,6 +1585,7 @@ void ModernEdirolSd80Processor::syncHardwarePush()
         enqueuePartPatch(part);
         enqueuePartMix(part);
         enqueuePartDeep(part);
+        throttle.push(gm2ScaleOctave(channelForPart(part), scaleTune[part]), portForPart(part));
     }
 }
 
@@ -1087,6 +1695,8 @@ bool ModernEdirolSd80Processor::saveMesd80Preset(const juce::File& file)
     xml->setAttribute("outA", outAName);
     xml->setAttribute("outB", outBName);
     xml->setAttribute("skin", skinIndex);
+    xml->setAttribute("aeterna", aeternaMode);
+    writeKeysXml(*xml, screenKeysOn, screenKeysVel, screenKeysOct, keysCurve, scaleTune);
     xml->setAttribute("locks", lockedIds.joinIntoString(","));
     return xml->writeTo(file);
 }
@@ -1114,6 +1724,10 @@ bool ModernEdirolSd80Processor::loadMesd80Preset(const juce::File& file)
 
     if (xml->hasAttribute("skin"))
         setSkinIndex(xml->getIntAttribute("skin", skinIndex));
+    if (xml->hasAttribute("aeterna"))
+        setAeternaMode(xml->getIntAttribute("aeterna", aeternaMode));
+    readKeysXml(*xml, screenKeysOn, screenKeysVel, screenKeysOct, keysCurve, scaleTune);
+    persistAppSettings();
     syncHardwarePush();
     return true;
 }
@@ -1128,8 +1742,28 @@ void ModernEdirolSd80Processor::getStateInformation(juce::MemoryBlock& destData)
     xml->setAttribute("inA", inAName);
     xml->setAttribute("inB", inBName);
     xml->setAttribute("skin", skinIndex);
+    xml->setAttribute("aeterna", aeternaMode);
+    writeKeysXml(*xml, screenKeysOn, screenKeysVel, screenKeysOct, keysCurve, scaleTune);
     xml->setAttribute("locks", lockedIds.joinIntoString(","));
     xml->setAttribute("routeAsPlayed", 1);
+    if (auto d = daw.toXml())
+        xml->addChildElement(d.release());
+    {
+        auto* el = new juce::XmlElement("mesd80patch");
+        writePatchXml(*el, userPatch);
+        xml->addChildElement(el);
+        auto* lib = new juce::XmlElement("mesd80lib");
+        lib->setAttribute("slot", userSlot);
+        for (int i = 0; i < kUserPatchSlots; ++i)
+        {
+            if (! userSlots[(size_t) i].used)
+                continue;
+            auto* c = lib->createNewChildElement("mesd80patch");
+            c->setAttribute("slot", i);
+            writePatchXml(*c, userSlots[(size_t) i].patch);
+        }
+        xml->addChildElement(lib);
+    }
     copyXmlToBinary(*xml, destData);
 }
 
@@ -1138,6 +1772,21 @@ void ModernEdirolSd80Processor::setStateInformation(const void* data, int sizeIn
     auto xml = getXmlFromBinary(data, sizeInBytes);
     if (! xml)
         return;
+    if (auto* d = xml->getChildByName("mesd80song"))
+    {
+        daw.fromXml(*d);
+        xml->removeChildElement(d, true);
+    }
+    if (auto* p = xml->getChildByName("mesd80patch"))
+    {
+        userPatch = readPatchXml(*p);
+        xml->removeChildElement(p, true);
+    }
+    if (auto* lib = xml->getChildByName("mesd80lib"))
+    {
+        loadUserLibraryXml(*lib);
+        xml->removeChildElement(lib, true);
+    }
     suppressOutgoing = true;
     auto tree = juce::ValueTree::fromXml(*xml);
     if (tree.isValid())
@@ -1150,6 +1799,9 @@ void ModernEdirolSd80Processor::setStateInformation(const void* data, int sizeIn
     inBName  = xml->getStringAttribute("inB");
     if (xml->hasAttribute("skin"))
         setSkinIndex(xml->getIntAttribute("skin", 0));
+    if (xml->hasAttribute("aeterna"))
+        setAeternaMode(xml->getIntAttribute("aeterna", aeternaMode));
+    readKeysXml(*xml, screenKeysOn, screenKeysVel, screenKeysOct, keysCurve, scaleTune);
     lockedIds = juce::StringArray::fromTokens(xml->getStringAttribute("locks"), ",", "");
     lockedIds.trim();
     lockedIds.removeEmptyStrings();
@@ -1271,7 +1923,7 @@ void ModernEdirolSd80Processor::sendQueued(const QueuedMidi& q, juce::MidiBuffer
 void ModernEdirolSd80Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
 {
     buffer.clear();
-    throttle.setDelayMs(paramInt("throttle", 30));
+    throttle.setDelayMs(paramInt("throttle", 0));
 
     juce::MidiBuffer incoming = midi;
     midi.clear();
@@ -1304,6 +1956,13 @@ void ModernEdirolSd80Processor::processBlock(juce::AudioBuffer<float>& buffer, j
     for (const auto metadata : incoming)
     {
         auto msg = metadata.getMessage();
+        if (msg.isNoteOn() && msg.getVelocity() > 0)
+        {
+            const double ts = msg.getTimeStamp();
+            msg = juce::MidiMessage::noteOn(msg.getChannel(), msg.getNoteNumber(),
+                                            (juce::uint8) shapedVelocity(msg.getVelocity()));
+            msg.setTimeStamp(ts);
+        }
         if (msg.isSysEx())
         {
             applyDumpMessage(msg);
@@ -1333,6 +1992,9 @@ void ModernEdirolSd80Processor::processBlock(juce::AudioBuffer<float>& buffer, j
                 if (msg.getChannel() >= 1)
                     out = remapToPart(msg, channelForPart(p));
                 sendQueued({ out, portForPart(p) }, &midi, metadata.samplePosition);
+                if (msg.isNoteOnOrOff())
+                    daw.recordLive(p, msg.isNoteOn() && msg.getVelocity() > 0,
+                                   msg.getNoteNumber(), msg.getVelocity());
             }
         }
         else
@@ -1347,6 +2009,9 @@ void ModernEdirolSd80Processor::processBlock(juce::AudioBuffer<float>& buffer, j
                                          || msg.isChannelPressure()))
                 continue;
             sendQueued({ msg, port }, &midi, metadata.samplePosition);
+            if (msg.isNoteOnOrOff())
+                daw.recordLive(part, msg.isNoteOn() && msg.getVelocity() > 0,
+                               msg.getNoteNumber(), msg.getVelocity());
         }
     }
 
@@ -1377,39 +2042,45 @@ void ModernEdirolSd80Processor::processBlock(juce::AudioBuffer<float>& buffer, j
     {
         playlistSpentA.store(true);
         playlistA.setLooping(false);
-        if (playlistB.isLoaded() && ! playlistSpentB.load())
+        bool more = playlistLoopMode.load() == 1;
+        if (! more)
         {
-            playlistB.play();
-            if (playlistLoopMode.load() == 2)
-                playlistB.setLooping(true);
+            const juce::ScopedLock sl(playlistLock);
+            more = playlistQueue.size() > 0;
         }
-        else if (playlistLoopMode.load() == 1)
-            playlistNeedPlay.store(true);
-        else
-            playlistActive.store(false);
         playlistNeedArm.fetch_or(1);
+        if (more)
+            playlistNeedPlay.store(true);
+        else if (! (partBOn.load() && playlistB.isPlaying()))
+            playlistActive.store(false);
     }
     playlistB.render(currentSampleRate, buffer.getNumSamples(), emitPl);
-    if (playlistActive.load() && playlistB.consumeNaturalEnd())
+    if (playlistB.consumeNaturalEnd())
     {
-        playlistSpentB.store(true);
         playlistB.setLooping(false);
-        if (playlistA.isLoaded() && ! playlistSpentA.load())
+        if (partBOn.load() && playlistLoopMode.load() != 0 && playlistB.isLoaded())
         {
-            playlistA.play();
-            if (playlistLoopMode.load() == 2)
-                playlistA.setLooping(true);
+            playlistSpentB.store(false);
+            playlistB.setLooping(true);
+            playlistB.play();
         }
-        else if (playlistLoopMode.load() == 1)
-            playlistNeedPlay.store(true);
         else
-            playlistActive.store(false);
-        playlistNeedArm.fetch_or(2);
+        {
+            playlistSpentB.store(true);
+            if (! playlistA.isPlaying())
+                playlistActive.store(false);
+        }
     }
+    if ((playlistA.isPlaying() && playlistA.getPosition() > 0.4)
+        || (playlistB.isPlaying() && playlistB.getPosition() > 0.4))
+        playlistHeard.store(true);
+
+    daw.render(currentSampleRate, buffer.getNumSamples(), emitPl);
 
     QueuedMidi q;
     int guard = 0;
-    while (guard++ < 8 && throttle.popDue(currentSampleRate, buffer.getNumSamples(), q))
+    const int cap = throttle.isOff() ? 1024 : 8;
+    while (guard++ < cap && throttle.popDue(currentSampleRate, buffer.getNumSamples(), q))
         sendQueued(q, &midi, 0);
 }
 
@@ -1480,7 +2151,9 @@ void ModernEdirolSd80Processor::timerCallback()
     if (getCallbackLock().tryEnter())
     {
         QueuedMidi q;
-        if (throttle.popNow(q))
+        int n = 0;
+        const int cap = throttle.isOff() ? 256 : 1;
+        while (n++ < cap && throttle.popNow(q))
             sendQueued(q, nullptr, 0);
         getCallbackLock().exit();
     }
@@ -1492,6 +2165,7 @@ void ModernEdirolSd80Processor::timerCallback()
     }
 
     playlistService();
+    syncStudioDisplay();
 }
 
 void ModernEdirolSd80Processor::handleIncomingMidiMessage(juce::MidiInput*, const juce::MidiMessage& message)

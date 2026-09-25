@@ -9,6 +9,8 @@
 #include "MidiThrottleQueue.h"
 #include "MidiFileImporter.h"
 #include "MidiPlayer.h"
+#include "DawSong.h"
+#include "UserPatch.h"
 
 class ModernEdirolSd80Processor : public juce::AudioProcessor,
                                    public juce::Timer,
@@ -46,6 +48,23 @@ public:
     MidiPlayerEngine player;
     MidiPlayerEngine playlistA;
     MidiPlayerEngine playlistB;
+    MidiPlayerEngine studioView;
+    DawEngine daw;
+    UserPatch userPatch;
+    std::array<UserPatchSlot, kUserPatchSlots> userSlots;
+    int userSlot { 0 };
+
+    const UserPatch& getUserPatch() const { return userPatch; }
+    int getUserSlot() const { return userSlot; }
+    void setUserSlot(int i) { userSlot = juce::jlimit(0, kUserPatchSlots - 1, i); }
+    void setUserPatch(const UserPatch& p, bool persist);
+    void sendUserPatch(PatchPush what, int tone, bool withBase);
+    bool saveUserPatchFile(const juce::File&);
+    bool loadUserPatchFile(const juce::File&);
+    bool exportUserPatchSyx(const juce::File&);
+    void storeUserSlot(int index);
+    void recallUserSlot(int index);
+    bool userSlotUsed(int index) const;
 
     juce::StringArray midiOutputNames() const;
     juce::StringArray midiInputNames() const;
@@ -91,6 +110,10 @@ public:
     int getSkinIndex() const { return skinIndex; }
     void setSkinIndex(int i);
 
+    // 0 off, 1 on. Piano-roll companion only.
+    int getAeternaMode() const { return aeternaMode; }
+    void setAeternaMode(int mode);
+
     void muteAll(bool shouldMute);
     void unsoloAll();
     void autoDetectUsbPorts();
@@ -100,6 +123,10 @@ public:
     void pullFromHardware();
     void sendMasterVolume();
     void playlistAdd(const juce::File&);
+    void loadPartB(const juce::File&);
+    void setPartBEnabled(bool on);
+    bool partBEnabled() const { return partBOn.load(); }
+    void partBFollow(int cmd);
     void playlistPlay();
     void playlistPause();
     void playlistStop();
@@ -112,12 +139,36 @@ public:
     int cyclePlaylistLoop();
     MidiPlayerEngine& displayEngine();
     int displayPartGroup();
+    bool studioDisplayOn() const { return studioFollowing; }
+    void syncStudioDisplay();
+    void applyListedPatch(int part, int map, bool drum, int msb, int lsb, int pc);
     bool playlistSlotLoaded(int side) const;
     bool playlistSlotPlaying(int side) const;
     bool playlistSlotSpent(int side) const;
     juce::String playlistSlotName(int side) const;
     juce::StringArray playlistQueueNames() const;
     juce::String playlistStatus() const;
+    void dawPlay();
+    void dawPause();
+    void dawStop();
+    void dawPreview(int part, int pitch, bool on, int velocity = 100);
+    int getScaleTune(int part, int semitone) const;
+    void setScaleTune(int part, int semitone, int cents64);
+    void resetScaleTune(int part);
+    bool playlistMayLinger() const { return playlistOwnsTransport.load() && playlistHeard.load(); }
+    bool getScreenKeysOn() const { return screenKeysOn; }
+    void setScreenKeysOn(bool v);
+    int getScreenKeysVel() const { return screenKeysVel; }
+    void setScreenKeysVel(int v);
+    int getScreenKeysOct() const { return screenKeysOct; }
+    void setScreenKeysOct(int v);
+    int getKeysCurve() const { return keysCurve; }
+    void setKeysCurve(int v);
+    int shapedVelocity(int velocity) const;
+    bool dawSaveSong(const juce::File&);
+    bool dawLoadSong(const juce::File&);
+    bool dawImportMidi(const juce::File&, int track);
+    bool dawExportMidi(const juce::File&);
     bool consumeDumpDirty() { return dumpDirty.exchange(false); }
     bool skipFxResetWarning() const { return skipFxWarn; }
     void setSkipFxResetWarning(bool v);
@@ -126,6 +177,7 @@ public:
 
     std::function<void()> onImportFinished;
     std::function<void()> onSkinChanged;
+    std::function<void()> onAeternaChanged;
     juce::String lastImportSummary;
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
@@ -145,6 +197,7 @@ private:
     int channelForPart(int part) const { return (part % 16) + 1; }
     void persistAppSettings();
     void restoreAppSettings();
+    void loadUserLibraryXml(const juce::XmlElement&);
     void handleIncomingMidiMessage(juce::MidiInput*, const juce::MidiMessage&) override;
     void applyDumpMessage(const juce::MidiMessage&);
     void openNamedInput(std::unique_ptr<juce::MidiInput>& slot, juce::String& stored,
@@ -169,7 +222,13 @@ private:
 
     juce::StringArray lockedIds;
     int skinIndex { 0 };
+    int aeternaMode { 1 };
     bool skipFxWarn { false };
+    bool screenKeysOn { false };
+    int screenKeysVel { 100 };
+    int screenKeysOct { 4 };
+    int keysCurve { 0 };
+    std::uint8_t scaleTune[32][12] {};
     juce::ApplicationProperties appProps;
 
     juce::Array<juce::File> playlistQueue;
@@ -177,12 +236,23 @@ private:
     juce::CriticalSection playlistLock;
     std::atomic<bool> playlistActive { false };
     std::atomic<bool> playlistOwnsTransport { false };
+    std::atomic<bool> partBOn { false };
     std::atomic<bool> playlistPaused { false };
+    std::atomic<bool> playlistHeard { false };
     std::atomic<int> playlistLoopMode { 0 }; // 0 off, 1 whole playlist, 2 this song
     std::atomic<int> playlistNeedArm { 0 }; // bit0=A, bit1=B
     std::atomic<bool> playlistNeedPlay { false };
     std::atomic<bool> playlistSpentA { false };
     std::atomic<bool> playlistSpentB { false };
+    bool studioFollowing { false };
+    bool studioHold { false };
+    int studioSide { 0 };
+    int studioSeenGen { -1 };
+    int studioSeenMode { -1 };
+    int studioSeenEdit { -1 };
+    int studioSeenPat { -1 };
+    int studioSeenBpm { -1 };
+    double studioSeenSec { -1.0 };
     void playlistArm(int side);
     void applyPlaylistLoopToEngines();
     void refillPlaylistQueueUnlocked();

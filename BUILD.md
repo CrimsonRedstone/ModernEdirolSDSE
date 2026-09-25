@@ -82,7 +82,7 @@ Source/PluginEditor.*       Mixer, cassette player, options, skins
 Source/StandaloneApp.cpp    Custom standalone (no JUCE Options/Settings chrome)
 Source/SD80PatchData.h      Bank/PC lookup (from the manual)
 Source/SD80Sysex.h          DT1 / RQ1 / mode / MFX helpers (makeCc, not cc)
-Source/MidiThrottleQueue.h  20–50 ms FIFO
+Source/MidiThrottleQueue.h  optional 0–50 ms FIFO (default off)
 Source/MidiFileImporter.h   SMF parser for mixer auto-setup
 Source/MidiPlayer.h         Cassette SMF playback (with loop)
 Source/MidiRoll.h           Colour piano-roll under the cassette

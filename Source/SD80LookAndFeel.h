@@ -29,19 +29,25 @@ public:
         applyColours();
     }
 
+    juce::Font getLabelFont(juce::Label& label) override
+    {
+        const auto f = LookAndFeel_V4::getLabelFont(label);
+        return f.withHeight(f.getHeight() + 1.0f);
+    }
+
     juce::Font getTextButtonFont(juce::TextButton&, int) override
     {
-        return juce::FontOptions(12.0f).withStyle("Bold");
+        return juce::FontOptions(13.0f).withStyle("Bold");
     }
 
     juce::Font getComboBoxFont(juce::ComboBox&) override
     {
-        return juce::FontOptions(13.0f);
+        return juce::FontOptions(14.0f);
     }
 
     juce::Font getPopupMenuFont() override
     {
-        return juce::FontOptions(13.0f);
+        return juce::FontOptions(14.0f);
     }
 
     void drawRotarySlider(juce::Graphics& g, int x, int y, int w, int h,

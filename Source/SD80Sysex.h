@@ -162,6 +162,34 @@ inline juce::MidiMessage mfxSourceCommon(int mfxIndex0, bool common)
     return dt1(0x10, 0x00, 0x00, mm, { static_cast<std::uint8_t>(common ? 0x01 : 0x00) });
 }
 
+// GM2 Scale/Octave Tuning, 1-byte form (SD-80 manual: Scale/Octave Tuning Adjust).
+// F0 7E 10 08 08 JJ GG MM <12 offsets C..B> F7
+// 0x40 = 0 cents, 0x00 = -64, 0x7F = +63.
+// Channel bits: MM = ch 1-7, GG = ch 8-14, JJ = ch 15-16.
+inline juce::MidiMessage gm2ScaleOctave(int channel1to16, const std::uint8_t offsets12[12],
+                                       std::uint8_t dev = kDefaultDevId)
+{
+    const int ch = juce::jlimit(1, 16, channel1to16);
+    std::uint8_t jj = 0, gg = 0, mm = 0;
+    if (ch <= 7)
+        mm = (std::uint8_t) (1 << (ch - 1));
+    else if (ch <= 14)
+        gg = (std::uint8_t) (1 << (ch - 8));
+    else
+        jj = (std::uint8_t) (1 << (ch - 15));
+    std::uint8_t d[19];
+    d[0] = 0x7E;
+    d[1] = dev;
+    d[2] = 0x08;
+    d[3] = 0x08;
+    d[4] = jj;
+    d[5] = gg;
+    d[6] = mm;
+    for (int i = 0; i < 12; ++i)
+        d[7 + i] = (std::uint8_t) juce::jlimit(0, 127, (int) offsets12[i]);
+    return juce::MidiMessage::createSysExMessage(d, 19);
+}
+
 // Part output assign: 00=MFX (manual p.64)  address 10 00 pp 1F
 inline juce::MidiMessage partOutputAssign(int partIndex0, std::uint8_t assign /*0=MFX*/)
 {

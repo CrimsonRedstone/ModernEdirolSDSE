@@ -9,7 +9,7 @@
 
 VST3 / AU / CLAP / Standalone **MIDI controller** for the Edirol / Roland Studio Canvas **SD-80** (32-part, USB). You compile this JUCE 9.0.1 project; the plugin talks to the hardware over the two USB MIDI ports.
 
-**v1.6.5** by **Crimson Redstone**. Freeware. If you'd like to support the author, consider [purchasing the music](https://crimsonredstone.bandcamp.com/).
+**v1.8.12** by **Crimson Redstone**. Freeware. If you'd like to support the author, consider [purchasing the music](https://crimsonredstone.bandcamp.com/).
 
 > **When in doubt, press SYNC HARDWARE.** The SD-80 is 2002 USB hardware and drops messages if you dump too fast. Mute, solo and the cassette only reach the module through **Part A USB / Part B USB** in OPTIONS.
 >
@@ -42,12 +42,15 @@ Model ID `00H 48H` (shared with the SD-90). Roland checksum: `128 - (sum % 128)`
 - System reverb (6 GM2 types) + chorus (6 types) + 3 × 90-type MFX in grouped submenus, each with 4 knobs
 - Parts default to **output assign MFX** so insertion FX actually hit the sound
 - **SEL** routes a live MIDI keyboard onto that part (Follow SEL). An FL / 16-channel piano roll should use OPTIONS **Part A as-played** so channel 1 hits A1, same as the cassette. Player piano-roll colours are display-only.
-- Mute / Solo, plus **MUTE ALL / UNMUTE ALL / UNSOLO ALL** (Shift+mute / Shift+solo). Right-click a strip name to lock the instrument
-- **Sync Hardware** pushes the full 32-part state through a 20–50 ms USB throttle queue
+- Mute / Solo, plus **MUTE ALL / UNMUTE ALL / UNSOLO ALL** on the mixer bar next to **PART A 1-16 / PART B 17-32** (Shift+mute / Shift+solo). Right-click a strip name to lock the instrument. The deep-edit list filters by map and category; the part changes only when you click a sound. Knobs are grouped: Filter, Envelope, Vibrato, Send. **SCALE** is this part's tune, twelve cents from -64 to +63
+- **Sync Hardware** pushes the full 32-part state, including scale tune. USB throttle defaults to **0 ms** (off); OPTIONS can add 10–50 ms
 - Drag-and-drop `.mid` / `.midi` on the **mixer** auto-assigns bank/PC/mix and sets Live MIDI to Part A as-played
-- Separate **PLAYER** tab: cassette deck with **LOOP** and a falling colour piano-roll (notes come toward the keyboard; Guitar Hero glow on hit). **POP OUT** / **FULL**; minimize or close docks it back. A playlist mirrors here (Part A or B) until you load a tape
-- **PLAYLIST** tab: two deck cards (Part A / Part B) with live progress. Queue `.mid` files; PLAY starts A, then they ping-pong. LOOP on PLAYER while armed: whole playlist, this song, or off. Send setup is locked while armed
-- **OPTIONS**: audio I/O (real selector in standalone; greyed “Controlled by Host” in a DAW), USB ports, host MIDI route, module volume, Pull from SD-80, 9 skins, shortcuts, emergency reset
+- **PLAYER** tab: a short cassette on the left, the playlist filling the space under it, and the falling colour piano-roll at full height on the right. The keys stay on the busy four octaves, including while paused. **AETERNA** is On or Off. On, she glides along the incoming melody (ballet for a small step, walk or dash for a longer one, jump or somersault for a leap) and she does not teleport. **Space** plays and pauses. **POP OUT** / **FULL**. One dropped .mid loads a tape. Several arm the playlist. CLEAR empties the cassette and the playlist. LOOP: whole playlist, this song, or off. A STUDIO song mirrors here until you load a tape
+- **KEYS** (square toggle next to the tabs) is an on-screen piano, off until you turn it on. With it on, the computer keyboard plays the selected part (Z is C, like FL). OPTIONS velocity curve (Linear, Soft, Loud, Fixed) shapes live MIDI and those keys, not the cassette
+- Playlist (on the **PLAYER** tab, under the cassette, not its own tab): ADD and CLEAR, two deck cards (Part A / Part B) with live progress, plus the queue. The cassette PLAY / PAUSE / STOP drive it. CLEAR empties the cassette and the playlist. PLAY starts A, then they ping-pong. Send setup is locked while armed
+- **STUDIO** tab: write SD-80 songs (and edit imported MIDI) without a separate DAW. 32 lanes = mixer parts. Double-click a clip to edit it (EDIT badge + roll header). Drag clip edges to resize. M / S on each lane. GLOBAL tempo / master vol / FX, folded until you open it. Point CC curves: the arrow opens lanes (right-click picks one). Click the bar ruler to move the playhead. Shift+wheel, the scrollbar, or middle-drag pans. Alt+wheel changes the velocity of the selected note. Piano roll stays inside the pattern; -/+ zoom. SAVE / LOAD `.mesd80song`. IMPORT `.mid` (one pattern per channel, mixer patches sent, lanes start folded). EXPORT Part A `.mid` (and `-B.mid` if Part B has clips). Last song comes back with skins
+- **PATCH** tab: design a user tone. Four layers (on, loudness, tune, pan, velocity crossfade, through the effect or straight out). Drag filter / volume envelopes. Pick a factory base sound from a map and category list (Classical, Contemporary, Solo, Enhanced, Special 1, Special 2, User). INFO explains the controls. **SEND** on an SD-80 or SD-90 writes the part's temporary patch in Native — bank/PC first, then DT1. The module's 128 user slots only keep MFX from the panel Write Patch; this does not pretend to flash them. **SAVE / LOAD** `.mesd80patch` and the 144 local slots work for an SD-20 too (no SEND; LIVE is CC offsets, 64 = unchanged; tones 3–4 stay in the file). SYX export. Comes back with the session
+- **OPTIONS**: audio I/O (real selector in standalone; greyed “Controlled by Host” in a DAW), USB ports, host MIDI route, module volume, velocity curve, computer-key velocity, Pull from SD-80, 9 skins, shortcuts, emergency reset
 - Right-click any fader, knob, toggle or menu to **lock** it. Locks survive patch, MIDI import and presets
 - Session total recall via `getStateInformation` / `setStateInformation`
 - `.mesd80preset` XML snapshots
@@ -100,7 +103,7 @@ Source/PluginEditor.*       Mixer, cassette player, playlist, options, skins
 Source/StandaloneApp.cpp    Custom standalone (no JUCE Options/Settings chrome)
 Source/SD80PatchData.h      Bank/PC lookup (generated from the manual)
 Source/SD80Sysex.h          DT1 / RQ1 / mode / MFX helpers (makeCc, not cc)
-Source/MidiThrottleQueue.h  20–50 ms FIFO
+Source/MidiThrottleQueue.h  optional 0–50 ms FIFO (default off)
 Source/MidiFileImporter.h   SMF parser for mixer auto-setup
 Source/MidiPlayer.h         Cassette SMF playback
 Source/CassetteDeck.h       Empty / loaded / spinning cassette UI
@@ -111,15 +114,13 @@ github/                     GitHub homepage kit (README, CHANGELOG, BUILD, HARDW
 
 ## Hardware reminder
 
-Read [HARDWARE.md](HARDWARE.md) before you panic. The module is old. Treat it like old gear.
+Read [HARDWARE.md](github/HARDWARE.md) before you panic. The module is old. Treat it like old gear.
 
 ## License
 
-Plugin source: see [LICENSE](LICENSE). JUCE itself is GPL v3 (or a paid JUCE license). ASIO is a trademark of Steinberg Media Technologies GmbH.
+Plugin source: see [LICENSE](github/LICENSE). JUCE itself is GPL v3 (or a paid JUCE license). ASIO is a trademark of Steinberg Media Technologies GmbH.
 
 ## Disclaimer
+
 I know enough to understand and mess with code but nothing advanced, most of the code here was written by AI.
 Therefore if you have any complaints, bug reports, or suggestions make sure to be percise, detailed & with images where neccessary.
-
-## Known Bugs:
-Midi through DAW has a sound discrepency compared to midi loaded via the player.

@@ -11,13 +11,18 @@
 #include "CassetteDeck.h"
 #include "MidiRoll.h"
 #include "PlaylistDeck.h"
+#include "DawStudio.h"
+#include "PatchEditor.h"
+#include "ScreenKeys.h"
+#include "ScaleTune.h"
 
 class ModernEdirolSd80Editor : public juce::AudioProcessorEditor,
                                public juce::FileDragAndDropTarget,
                                private juce::Timer,
                                private juce::Button::Listener,
                                private juce::ComboBox::Listener,
-                               private juce::Slider::Listener
+                               private juce::Slider::Listener,
+                               private juce::KeyListener
 {
 public:
     explicit ModernEdirolSd80Editor(ModernEdirolSd80Processor&);
@@ -31,13 +36,19 @@ public:
     void fileDragExit(const juce::StringArray&) override;
     void filesDropped(const juce::StringArray& files, int, int) override;
 
-    enum class Tab { Mixer, Player, Playlist, Options };
+    enum class Tab { Mixer, Player, Playlist, Studio, Patch, Options };
 
 private:
     void timerCallback() override;
     void buttonClicked(juce::Button*) override;
     void comboBoxChanged(juce::ComboBox*) override;
     void sliderValueChanged(juce::Slider*) override;
+    bool keyPressed(const juce::KeyPress& key, juce::Component* originating) override;
+    bool keyStateChanged(bool isKeyDown, juce::Component* originating) override;
+    void toggleTransport();
+    void refreshScaleTune();
+    int pitchForComputerKey(const juce::KeyPress&) const;
+    void releaseComputerKeys();
 
     void applySkin();
     void rebuildDeviceLists();
@@ -57,6 +68,7 @@ private:
     void showReverbMenu();
     void showChorusMenu();
     void loadPlayerFile();
+    void loadPartBFile();
     void updatePlayerUi();
     void updatePlaylistUi();
     void addPlaylistFiles();
@@ -82,13 +94,18 @@ private:
     juce::TextButton tabMixer { "MIXER" };
     juce::TextButton tabPlayer { "PLAYER" };
     juce::TextButton tabPlaylist { "PLAYLIST" };
+    juce::TextButton tabStudio { "STUDIO" };
+    juce::TextButton tabPatch { "PATCH" };
     juce::TextButton tabOptions { "OPTIONS" };
+    juce::TextButton keysButton { "KEYS" };
     juce::TextButton savePreset { "Save preset" };
     juce::TextButton loadPreset { "Load preset" };
 
-    juce::Component mixerPage, playerPage, playlistPage, optionsPage;
+    juce::Component mixerPage, playerPage, playlistPage, studioPage, patchPage, optionsPage;
     juce::Viewport optionsView;
     juce::Component optionsInner;
+    std::unique_ptr<DawStudio> studio;
+    std::unique_ptr<PatchEditor> patchEd;
 
     struct Strip
     {
@@ -138,6 +155,10 @@ private:
     sd80lock::ToggleButton porta { "Portamento" };
     sd80lock::ComboBox mfxSel, outAsg;
     juce::Label cutL, resL, atkL, decL, relL, vrL, vdL, vdlL, exprL, revL, choL, mfxL, portaL;
+    juce::Label secFilter, secEnv, secVib, secSend;
+    juce::TextButton scaleButton { "SCALE" };
+    ScaleTune scaleTune;
+    bool scaleOpen { false };
 
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>
         cutA, resA, atkA, decA, relA, vrA, vdA, vdlA, exprA, revA, choA, mfxA, portaTA;
@@ -162,6 +183,10 @@ private:
     juce::Label playerHelp, playerWarn;
     juce::Label rollAwayLabel;
     juce::TextButton rollDockBtn { "DOCK PIANO ROLL" };
+    ScreenKeys screenKeys;
+    int compCode[32] {};
+    int compPitch[32] {};
+    int compCount { 0 };
 
     class PianoRollWindow : public juce::DocumentWindow
     {
@@ -174,6 +199,7 @@ private:
             setUsingNativeTitleBar(true);
             setResizable(true, false);
             setWantsKeyboardFocus(true);
+            addKeyListener(&ed);
         }
 
         void closeButtonPressed() override { ed.dockPianoRoll(); }
@@ -220,7 +246,7 @@ private:
             if (rows.isEmpty())
             {
                 g.setColour(muted);
-                g.setFont(juce::FontOptions(13.0f));
+                g.setFont(juce::FontOptions(14.0f));
                 g.drawText("Queue empty  -  drop more .mid files to keep ping-ponging",
                            14, 0, w - 28, h, juce::Justification::centredLeft);
                 return;
@@ -241,18 +267,18 @@ private:
             g.setColour(row == 0 ? accent.withAlpha(0.22f) : selBg);
             g.fillRoundedRectangle(idx.toFloat(), 4.0f);
             g.setColour(row == 0 ? accent : muted);
-            g.setFont(juce::FontOptions(11.0f).withStyle("Bold"));
+            g.setFont(juce::FontOptions(12.0f).withStyle("Bold"));
             g.drawText(juce::String(row + 1), idx, juce::Justification::centred, false);
             int x = 46;
             if (row == 0)
             {
                 g.setColour(accent);
-                g.setFont(juce::FontOptions(10.0f).withStyle("Bold"));
+                g.setFont(juce::FontOptions(11.0f).withStyle("Bold"));
                 g.drawText("NEXT", x, 0, 44, h, juce::Justification::centredLeft, false);
                 x += 48;
             }
             g.setColour(text);
-            g.setFont(juce::FontOptions(14.0f));
+            g.setFont(juce::FontOptions(15.0f));
             g.drawText(rows[row], x, 0, w - x - 12, h, juce::Justification::centredLeft, true);
         }
     } playlistModel;
@@ -268,7 +294,9 @@ private:
     sd80lock::ToggleButton hostMirrorA { "Host MIDI mirrors Part A" };
     sd80lock::ToggleButton hostMirrorB { "Host MIDI mirrors Part B" };
     sd80lock::Slider masterVol;
-    juce::Label masterVolL, hostRouteL, audioMidiNote;
+    juce::Label masterVolL, hostRouteL, audioMidiNote, velCurveL, keysVelL;
+    juce::ComboBox velCurveBox;
+    juce::Slider keysVel;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> hostAAtt, hostBAtt;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> modeAtt, hostRouteAtt;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> masterVolAtt;
@@ -280,6 +308,8 @@ private:
     juce::TextButton emergencyBtn { "Emergency Hardware Reset" };
 
     bool dragging { false };
+    bool patchUiLock { false };
+    bool spaceLatched { false };
     int lastBoundPart { -1 };
     juce::TooltipWindow tooltipWindow { this, 700 };
 

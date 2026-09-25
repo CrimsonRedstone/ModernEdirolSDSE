@@ -103,9 +103,9 @@ public:
         if (! loaded)
         {
             g.setColour(cMut);
-            g.setFont(juce::FontOptions(18.0f));
+            g.setFont(juce::FontOptions(19.0f));
             g.drawText("NO TAPE", window, juce::Justification::centred);
-            g.setFont(juce::FontOptions(13.0f));
+            g.setFont(juce::FontOptions(14.0f));
             g.drawText("Load a .mid file to drop a cassette in the bay",
                        window.translated(0, 26), juce::Justification::centred);
         }
@@ -127,12 +127,12 @@ public:
             g.drawLine(left.x + reelR, left.y, right.x - reelR, right.y, 2.0f);
 
             g.setColour(cText);
-            g.setFont(juce::FontOptions(13.0f).withStyle("Bold"));
+            g.setFont(juce::FontOptions(14.0f).withStyle("Bold"));
             g.drawText(title, body.removeFromTop(28.0f), juce::Justification::centred);
 
             const auto label = formatTime(position) + "  /  " + formatTime(length);
             g.setColour(cMut);
-            g.setFont(juce::FontOptions(11.0f));
+            g.setFont(juce::FontOptions(12.0f));
             g.drawText(label,
                        (int) window.getX(),
                        (int) (window.getBottom() - 22.0f),

@@ -7,6 +7,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "MidiPlayer.h"
 #include "Skin.h"
+#include "AeternaCompanion.h"
 
 // Falling-notes piano-roll (Synthesia / Guitar Hero highway).
 // Pitch on X, time coming toward a keyboard at the bottom.
@@ -16,18 +17,32 @@ class MidiRoll : public juce::Component, private juce::Timer
 {
 public:
     std::function<void()> onPopOut, onFullScreen;
+    std::function<void(int)> onAeternaMode;
 
     MidiRoll()
     {
         setOpaque(false);
+        setWantsKeyboardFocus(true);
         popBtn.setButtonText("POP OUT");
         fullBtn.setButtonText("FULL");
+        aetBtn.setButtonText("Aeterna On");
         popBtn.setConnectedEdges(juce::Button::ConnectedOnRight);
         fullBtn.setConnectedEdges(juce::Button::ConnectedOnLeft);
         popBtn.onClick = [this] { if (onPopOut) onPopOut(); };
         fullBtn.onClick = [this] { if (onFullScreen) onFullScreen(); };
+        aetBtn.onClick = [this]
+        {
+            const int next = aeterna.getMode() == 0 ? 1 : 0;
+            aeterna.setMode(next);
+            refreshAeternaButton();
+            if (onAeternaMode)
+                onAeternaMode(next);
+            repaint();
+        };
+        aetBtn.setTooltip("Aeterna on the piano roll. Click to turn her on or off.");
         addAndMakeVisible(popBtn);
         addAndMakeVisible(fullBtn);
+        addAndMakeVisible(aetBtn);
         for (int i = 0; i < 128; ++i)
         {
             prevOn[i] = false;
@@ -51,6 +66,11 @@ public:
         flashes.clear();
         for (int i = 0; i < 128; ++i)
             prevOn[i] = false;
+        if (engine != nullptr)
+            engine->copyScore(seenGen, score, scoreLength, loNote, hiNote, channelMask);
+        holdPicture = false;
+        refitKeys();
+        aeterna.noteScoreChanged();
     }
 
     void setPortLetter(char c)
@@ -79,11 +99,12 @@ public:
         pal = &p;
         auto cSurf = juce::Colour(p.surface2);
         auto cText = juce::Colour(p.text);
-        for (auto* b : { &popBtn, &fullBtn })
+        for (auto* b : { &popBtn, &fullBtn, &aetBtn })
         {
             b->setColour(juce::TextButton::buttonColourId, cSurf);
             b->setColour(juce::TextButton::textColourOffId, cText);
         }
+        refreshAeternaButton();
         repaint();
     }
 
@@ -97,18 +118,58 @@ public:
         fullBtn.setButtonText(fullScreen ? "EXIT FULL" : "FULL");
     }
 
+    void setAeternaMode(int mode)
+    {
+        aeterna.setMode(mode);
+        refreshAeternaButton();
+        repaint();
+    }
+
+    void setAeternaLinger(bool v) { aeterna.setLinger(v); }
+    void setAeternaBpm(double bpm) { aeterna.setBpm(bpm); }
+    void setAeternaDrums(std::uint32_t mask)
+    {
+        aeterna.setDrumMask(mask);
+        if (mask == drumMask)
+            return;
+        drumMask = mask;
+        fitValid = false;
+        if (! score.empty())
+            refitKeys();
+    }
+
+    // STOP (not pause) should show the start of the file.
+    void snapDisplayToEngine() { snapDisplay = true; }
+
+    int getAeternaMode() const { return aeterna.getMode(); }
+
+    void setBanner(const juce::String& s)
+    {
+        if (banner == s)
+            return;
+        banner = s;
+        repaint();
+    }
+
     void resized() override
     {
         auto r = getLocalBounds().reduced(16, 12);
         auto cap = r.removeFromTop(18);
         fullBtn.setBounds(cap.removeFromRight(104).reduced(2, 0));
         popBtn.setBounds(cap.removeFromRight(92).reduced(2, 0));
+        aetBtn.setBounds(cap.removeFromRight(118).reduced(2, 0));
     }
 
     void paint(juce::Graphics& g) override
     {
-        if (engine != nullptr)
+        const bool playingNow = engine != nullptr && engine->isLoaded() && engine->isPlaying();
+        if (engine != nullptr && (playingNow || ! holdPicture))
+        {
+            const int genBefore = seenGen;
             engine->copyScore(seenGen, score, scoreLength, loNote, hiNote, channelMask);
+            if (seenGen != genBefore)
+                refitKeys();
+        }
 
         auto cBg = juce::Colour(pal ? pal->bg : 0xff101218);
         auto cSurf = juce::Colour(pal ? pal->surface : 0xff1a1d27);
@@ -128,7 +189,33 @@ public:
         g.drawRoundedRectangle(r, 10.0f, 1.0f);
 
         const bool haveTape = engine != nullptr && engine->isLoaded();
-        const std::uint32_t mask = haveTape ? channelMask : 0;
+        int lo = fitValid ? fitLo : (haveTape ? loNote : 36);
+        int hi = fitValid ? fitHi : (haveTape ? hiNote : 84);
+        lo = juce::jlimit(0, 127, lo);
+        hi = juce::jlimit(lo, 127, hi);
+        lo -= lo % 12;
+        if ((hi % 12) != 11)
+            hi += 11 - (hi % 12);
+        hi = juce::jmin(127, hi);
+        if (hi < lo)
+            hi = juce::jmin(127, lo + 11);
+        const int spanLo = lo;
+        const int span = juce::jmax(12, hi - spanLo + 1);
+
+        std::uint32_t visMask = 0;
+        int visNotes = 0;
+        if (haveTape)
+        {
+            for (const auto& n : score)
+            {
+                if (n.note < spanLo || n.note >= spanLo + span)
+                    continue;
+                if (n.channel >= 1 && n.channel <= 16)
+                    visMask |= (1u << (n.channel - 1));
+                ++visNotes;
+            }
+        }
+        const std::uint32_t mask = haveTape ? visMask : 0;
         const int used = countBits(mask);
         const int legendH = (! haveTape) ? 22 : (used > 8 ? 38 : 22);
 
@@ -139,7 +226,7 @@ public:
         inner.removeFromBottom(4.0f);
 
         g.setColour(cMut);
-        g.setFont(juce::FontOptions(11.0f).withStyle("Bold"));
+        g.setFont(juce::FontOptions(12.0f).withStyle("Bold"));
         juce::String cap;
         if (! haveTape)
             cap = "Load a .mid - notes fall toward the keyboard";
@@ -147,10 +234,12 @@ public:
         {
             cap = (portLetter == 'B' ? "PART B  |  " : "PART A  |  ");
             cap += juce::String(used) + " colours  |  "
-                + juce::String((int) score.size()) + " notes  |  "
-                + (lastPlaying ? "PLAYING" : "CUED");
+                + juce::String(visNotes) + " notes  |  "
+                + (lastPlaying ? "PLAYING" : (displayPos > 0.08 ? "PAUSED" : "CUED"));
         }
-        g.drawText(cap, caption.withTrimmedRight(210.0f).toNearestInt(),
+        if (banner.isNotEmpty() && haveTape)
+            cap = banner + "  |  " + cap;
+        g.drawText(cap, caption.withTrimmedRight(340.0f).toNearestInt(),
                    juce::Justification::centredLeft);
 
         auto well = inner;
@@ -163,12 +252,6 @@ public:
         const float keyH = juce::jlimit(48.0f, 92.0f, well.getHeight() * 0.22f);
         auto keys = well.removeFromBottom(keyH);
         auto plot = well.reduced(6.0f, 4.0f);
-
-        const int lo = haveTape ? loNote : 36;
-        const int hi = haveTape ? hiNote : 84;
-        const int spanLo = juce::jmax(0, lo - 2);
-        const int spanHi = juce::jmin(127, hi + 2);
-        const int span = juce::jmax(18, spanHi - spanLo);
 
         float keyX[128];
         float keyWf[128];
@@ -201,8 +284,17 @@ public:
                 --prev;
             const float pw = (prev >= spanLo) ? keyWf[prev] : whiteW;
             const float px = (prev >= spanLo) ? keyX[prev] : keys.getX();
-            keyWf[n] = pw * 0.58f;
-            keyX[n] = px + pw * 0.64f;
+            const int pc = ((n % 12) + 12) % 12;
+            float nudge = 0.0f;
+            if (pc == 1 || pc == 6)
+                nudge = -0.12f;
+            else if (pc == 3 || pc == 10)
+                nudge = 0.12f;
+            const float bw = pw * 0.58f;
+            const float boundary = px + pw;
+            keyWf[n] = bw;
+            keyX[n] = juce::jlimit(keys.getX(), keys.getRight() - bw,
+                                   boundary - bw * 0.5f + nudge * pw);
         }
 
         const double length = juce::jmax(0.001, haveTape ? scoreLength : 1.0);
@@ -238,12 +330,13 @@ public:
                 g.strokePath(lane, juce::PathStrokeType(1.0f));
             }
 
-            // Time rings (upcoming beats of 0.5s).
-            for (int k = 1; k <= 8; ++k)
+            // Time rings ride the playhead toward the keyboard (0.5 s apart).
+            const float phase = (float) std::fmod(juce::jmax(0.0, displayPos), 0.5);
+            for (int k = 0; k <= 16; ++k)
             {
-                const float z = 0.5f * (float) k;
-                if (z > zFar)
-                    break;
+                const float z = 0.5f * (float) k - phase;
+                if (z < 0.02f || z > zFar)
+                    continue;
                 const float p = perspective(z, zFar);
                 const float y = hitY - p * highwayH;
                 const float inset = juce::jmap(p, 0.0f, 1.0f, 0.0f, plot.getWidth() * 0.34f);
@@ -259,23 +352,35 @@ public:
                     float dFar;
                     bool on;
                 };
-                Vis visArr[256];
+                Vis visArr[320];
                 int nVis = 0;
                 for (int i = 0; i < (int) score.size(); ++i)
                 {
                     const auto& hit = score[(size_t) i];
                     if ((silenced & (1u << (hit.channel - 1))) != 0)
                         continue;
+                    if (hit.note < spanLo || hit.note >= spanLo + span)
+                        continue;
                     const float z0 = (float) (hit.startSec - pos);
                     const float z1 = (float) (hit.endSec - pos);
                     if (z1 < -0.05f || z0 > zFar * 1.05f)
                         continue;
-                    if (nVis >= 256)
-                        break;
-                    visArr[nVis].idx = i;
-                    visArr[nVis].dFar = juce::jmax(z0, z1);
-                    visArr[nVis].on = (pos >= hit.startSec && pos < hit.endSec);
-                    ++nVis;
+                    Vis item;
+                    item.idx = i;
+                    item.dFar = juce::jmax(z0, z1);
+                    item.on = (pos >= hit.startSec && pos < hit.endSec);
+                    if (nVis < 320)
+                    {
+                        visArr[nVis] = item;
+                        ++nVis;
+                        continue;
+                    }
+                    int far = 0;
+                    for (int k = 1; k < nVis; ++k)
+                        if (visArr[k].dFar > visArr[far].dFar)
+                            far = k;
+                    if (item.dFar < visArr[far].dFar)
+                        visArr[far] = item;
                 }
                 // Far to near so nearer notes paint on top.
                 for (int a = 0; a < nVis; ++a)
@@ -305,7 +410,7 @@ public:
             else
             {
                 g.setColour(cMut.withAlpha(0.7f));
-                g.setFont(juce::FontOptions(14.0f));
+                g.setFont(juce::FontOptions(15.0f));
                 g.drawText("NO TAPE", plot.toNearestInt(), juce::Justification::centred);
             }
 
@@ -355,14 +460,34 @@ public:
             }
         }
 
+        if (aeterna.getMode() != 0)
+        {
+            aeterna.paint(g, pos, spanLo, span, keyX, keyWf, keys, zFar, hitY,
+                          highwayH, vanishX, plot);
+        }
+
         drawKeyboardH(g, keys, spanLo, span, keyX, keyWf, wellFill, cMut, cText);
         drawLegend(g, legend, mask, cMut, cText, haveTape);
     }
 
     void timerCallback() override
     {
-        if (engine != nullptr)
+        const bool loadedNow = engine != nullptr && engine->isLoaded();
+        const bool playingNow = loadedNow && engine->isPlaying();
+        if (snapDisplay)
+            holdPicture = false;
+        if (engine != nullptr && (playingNow || ! holdPicture))
+        {
+            const int genBefore = seenGen;
             engine->copyScore(seenGen, score, scoreLength, loNote, hiNote, channelMask);
+            if (seenGen != genBefore)
+                refitKeys();
+        }
+        if (! loadedNow)
+        {
+            fitValid = false;
+            holdPicture = false;
+        }
 
         const double now = juce::Time::getMillisecondCounterHiRes() * 0.001;
         if (engine != nullptr && engine->isLoaded())
@@ -370,12 +495,28 @@ public:
             const double eng = engine->getPosition();
             const bool playing = engine->isPlaying();
             const double len = juce::jmax(0.001, scoreLength);
-            if (playing)
+            if (snapDisplay)
+            {
+                displayPos = juce::jlimit(0.0, len, eng);
+                pauseHold = displayPos;
+                snapDisplay = false;
+                aeterna.noteSeekOrStop();
+            }
+            else if (playing)
             {
                 if (! lastPlaying)
-                    displayPos = eng;
+                {
+                    // A pause that zeroed the engine clock must not blank the roll.
+                    if (eng < 0.05 && pauseHold > 0.35)
+                        displayPos = pauseHold;
+                    else
+                        displayPos = eng;
+                }
                 else if (eng + 0.4 < displayPos)
+                {
                     displayPos = eng;
+                    aeterna.noteSeekOrStop();
+                }
                 else
                 {
                     displayPos += now - lastWallSec;
@@ -383,12 +524,25 @@ public:
                         displayPos = eng;
                 }
                 displayPos = juce::jlimit(0.0, len, displayPos);
+                pauseHold = displayPos;
             }
             else
             {
-                displayPos = eng;
+                // Hold the picture for the whole pause. Following a clock that
+                // jumps to 0 hides every note until play.
+                if (lastPlaying)
+                    pauseHold = displayPos;
+                const bool bogusZero = eng < 0.05 && pauseHold > 0.35;
+                if (! bogusZero)
+                    displayPos = juce::jlimit(0.0, len, eng);
+                else
+                    displayPos = pauseHold;
             }
             lastPlaying = playing;
+            if (! playing)
+                holdPicture = true;
+            else
+                holdPicture = false;
         }
         else
         {
@@ -439,6 +593,15 @@ public:
         }
         flashes.resize((size_t) w);
 
+        {
+            const double dt = now - lastWallSec;
+            const bool loaded = engine != nullptr && engine->isLoaded();
+            const bool playing = loaded && engine->isPlaying();
+            const bool jumped = loaded && playing && lastPlaying && displayPos + 0.05 < aetPrevPos;
+            aeterna.tick(dt, displayPos, aetPrevPos, playing, loaded, jumped, score, silenced);
+            aetPrevPos = displayPos;
+        }
+
         lastWallSec = now;
         repaint();
     }
@@ -453,6 +616,79 @@ public:
         };
         const int i = juce::jlimit(0, 15, ch1to16 - 1);
         return juce::Colour(kCol[i]);
+    }
+
+    bool noteIsDrum(const PlayerNote& n) const
+    {
+        if (n.channel < 1 || n.channel > 16)
+            return false;
+        if (n.channel == 10)
+            return true;
+        return (drumMask & (1u << (n.channel - 1))) != 0;
+    }
+
+    // Every pitched note, snapped out to whole octaves (C through B).
+    // At least five octaves so a mid-range file still shows more than C3-C6.
+    // A note outside the window widens it. Pause does not, while the notes still fit.
+    void refitKeys()
+    {
+        int loN = 128;
+        int hiN = -1;
+        auto consider = [&](bool drumsToo)
+        {
+            loN = 128;
+            hiN = -1;
+            for (const auto& n : score)
+            {
+                if (n.note < 0 || n.note > 127)
+                    continue;
+                if (! drumsToo && noteIsDrum(n))
+                    continue;
+                loN = juce::jmin(loN, n.note);
+                hiN = juce::jmax(hiN, n.note);
+            }
+        };
+        consider(false);
+        if (hiN < loN)
+            consider(true);
+        if (hiN < loN)
+        {
+            fitLo = 36;
+            fitHi = 95;
+            fitValid = true;
+            return;
+        }
+        int lo = (loN / 12) * 12;
+        int hi = (hiN / 12) * 12 + 11;
+        if (hi < hiN)
+            hi = juce::jmin(127, hiN);
+        const int minSpan = 59;
+        if (hi - lo < minSpan)
+        {
+            const int midOct = ((loN + hiN) / 2) / 12;
+            lo = midOct * 12 - 24;
+            if (lo < 0)
+                lo = 0;
+            lo = (lo / 12) * 12;
+            hi = lo + minSpan;
+            if (hi > 127)
+            {
+                hi = 127;
+                lo = (juce::jmax(0, hi - minSpan) / 12) * 12;
+            }
+            if (lo > loN)
+                lo = (loN / 12) * 12;
+            if (hi < hiN)
+                hi = juce::jmin(127, (hiN / 12) * 12 + 11);
+        }
+        hi = juce::jmin(127, hi);
+        lo = juce::jlimit(0, hi, lo);
+        if (fitValid && fitLo <= loN && fitHi >= hiN
+            && std::abs(fitLo - lo) <= 12 && std::abs(fitHi - hi) <= 12)
+            return;
+        fitLo = lo;
+        fitHi = hi;
+        fitValid = true;
     }
 
 private:
@@ -584,7 +820,7 @@ private:
             if ((n % 12) == 0)
             {
                 g.setColour(on ? juce::Colours::white : text.withAlpha(0.75f));
-                g.setFont(juce::FontOptions(9.0f));
+                g.setFont(juce::FontOptions(10.0f));
                 g.drawText("C" + juce::String(n / 12 - 1),
                            (int) keyX[n], (int) (keys.getBottom() - 16.0f),
                            (int) keyWf[n], 14, juce::Justification::centred);
@@ -621,7 +857,7 @@ private:
         if (used == 0)
         {
             g.setColour(mut);
-            g.setFont(juce::FontOptions(11.0f));
+            g.setFont(juce::FontOptions(12.0f));
             g.drawText("Nothing on the tape yet", legend.toNearestInt(), juce::Justification::centred);
             return;
         }
@@ -644,7 +880,7 @@ private:
             g.setColour(colr);
             g.fillEllipse(chip);
             g.setColour(text.withAlpha(0.9f));
-            g.setFont(juce::FontOptions(10.0f));
+            g.setFont(juce::FontOptions(11.0f));
             juce::String label;
             label += portLetter;
             label += juce::String(ch);
@@ -660,6 +896,7 @@ private:
 
     MidiPlayerEngine* engine { nullptr };
     char portLetter { 'A' };
+    juce::String banner;
     const SkinPalette* pal { &kSkins[0] };
     juce::StringArray partNames;
     std::vector<PlayerNote> score;
@@ -668,13 +905,42 @@ private:
     double displayPos { 0.0 };
     double lastWallSec { 0.0 };
     int loNote { 48 }, hiNote { 72 };
+    int fitLo { 48 }, fitHi { 95 };
+    bool fitValid { false };
+    bool holdPicture { false };
+    std::uint32_t drumMask { 0 };
     int seenGen { -1 };
     std::uint32_t channelMask { 0 };
     std::uint32_t silenced { 0 };
     bool active { false };
     bool lastPlaying { false };
+    bool snapDisplay { false };
+    double pauseHold { 0.0 };
+    double aetPrevPos { 0.0 };
     bool prevOn[128];
     bool soundingNow[128];
     juce::uint32 soundColNow[128];
-    juce::TextButton popBtn, fullBtn;
+    juce::TextButton popBtn, fullBtn, aetBtn;
+    AeternaCompanion aeterna;
+
+    void refreshAeternaButton()
+    {
+        const int m = aeterna.getMode();
+        if (m <= 0)
+        {
+            aetBtn.setButtonText("Aeterna Off");
+            aetBtn.setTooltip("Aeterna is off. Click to put her on the notes.");
+        }
+        else
+        {
+            aetBtn.setButtonText("Aeterna On");
+            aetBtn.setTooltip("Aeterna follows the notes. She hops, dances, and rides the long ones. Click to turn her off.");
+        }
+        auto cAcc = juce::Colour(pal ? pal->accent : 0xffe8a317);
+        auto cSurf = juce::Colour(pal ? pal->surface2 : 0xff242833);
+        aetBtn.setColour(juce::TextButton::buttonColourId, m == 0 ? cSurf : cAcc.withAlpha(0.85f));
+        aetBtn.setColour(juce::TextButton::textColourOffId,
+                         m == 0 ? juce::Colour(pal ? pal->text : 0xffece8df)
+                                : juce::Colour(0xff1a1408));
+    }
 };
